@@ -3,12 +3,15 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from timeline.domain.models import Event, Chunk
-from timeline.domain.enums import EventKind
+from timeline.domain.enums import DeviceSource, EventKind
 
 
 class IntervalBuilder:
     """
     Builds time intervals (chunks) from a stream of Events.
+
+    Each device source has its own interval state. Intervals from different
+    sources may overlap, but a single source may only have one active interval.
 
     Usage:
 
@@ -21,7 +24,7 @@ class IntervalBuilder:
     """
 
     def __init__(self):
-        self._active: dict[tuple[str, str | None, str | None], Event] = {}
+        self._active: dict[DeviceSource, Event] = {}
 
         self._chunks: list[Chunk] = []
         self._warnings: list[str] = []
@@ -34,11 +37,11 @@ class IntervalBuilder:
     def chunks(self) -> list[Chunk]:
         return self._chunks
 
-    def _key(self, event: Event) -> tuple[str, str | None, str | None]:
+    def _describe(self, event: Event) -> str:
         return (
-            event.device_source,
-            event.category,
-            event.name,
+            f"{event.device_source.value}/"
+            f"{event.category or '<missing>'}/"
+            f"{event.name or '<missing>'}"
         )
 
     def add(self, event: Event) -> None:
@@ -47,7 +50,7 @@ class IntervalBuilder:
         if event.event_kind == EventKind.POINT:
             return
 
-        key = self._key(event)
+        source = event.device_source
 
         # ------------------------
         # START
@@ -55,14 +58,17 @@ class IntervalBuilder:
 
         if event.event_kind == EventKind.INTERVAL_START:
 
-            if key in self._active:
+            if source in self._active:
+                current = self._active[source]
 
                 self._warnings.append(
-                    f"Duplicate start: {key} "
-                    f"at {event.timestamp}"
+                    f"Duplicate start on {source.value}: "
+                    f"{self._describe(event)} at {event.timestamp} "
+                    f"while {self._describe(current)} is active"
                 )
+                return
 
-            self._active[key] = event
+            self._active[source] = event
             return
 
         # ------------------------
@@ -71,15 +77,23 @@ class IntervalBuilder:
 
         if event.event_kind == EventKind.INTERVAL_END:
 
-            start = self._active.pop(key, None)
+            start = self._active.get(source)
 
             if start is None:
 
                 self._warnings.append(
-                    f"End without start: {key} "
+                    f"End without start: {self._describe(event)} "
                     f"at {event.timestamp}"
                 )
 
+                return
+
+            if event.category != start.category or event.name != start.name:
+                self._warnings.append(
+                    f"End does not match active start on {source.value}: "
+                    f"started {self._describe(start)} at {start.timestamp}, "
+                    f"ended {self._describe(event)} at {event.timestamp}"
+                )
                 return
 
             duration = int(
@@ -89,10 +103,12 @@ class IntervalBuilder:
             if duration < 0:
 
                 self._warnings.append(
-                    f"Negative duration: {key}"
+                    f"Negative duration: {self._describe(event)}"
                 )
 
                 return
+
+            self._active.pop(source, None)
 
             self._chunks.append(
                 Chunk(
@@ -110,10 +126,10 @@ class IntervalBuilder:
     def finish(self) -> list[Chunk]:
 
         # Report unfinished intervals
-        for key, event in self._active.items():
+        for event in self._active.values():
 
             self._warnings.append(
-                f"Unclosed interval: {key} "
+                f"Unclosed interval: {self._describe(event)} "
                 f"(started {event.timestamp})"
             )
 

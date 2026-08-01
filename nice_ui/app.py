@@ -5,18 +5,27 @@ from timeline.storage.repository import SQLiteRepository
 from timeline.api.timeline import Timeline
 
 from nice_ui.pages.filter_panel import FilterPanel
-from nice_ui.pages.summary import SummaryView
-from nice_ui.pages.by_activity import ActivityView
-from nice_ui.pages.by_day import DailyView
+from nice_ui.pages.statistics import StatisticsView
+from nice_ui.pages.analytics import AnalyticsView
+from nice_ui.pages.plots import PlotsView
+from nice_ui.pages.events import EventsView
 
 repo = SQLiteRepository(Path("timeline.db"))
 timeline = Timeline(repo)
 
 current_timeline = timeline
+statistics: StatisticsView | None = None
+analytics: AnalyticsView | None = None
+plots: PlotsView | None = None
+events: EventsView | None = None
+
 def refresh():
     global current_timeline
     current_timeline = filters.timeline()
-    update_current_tab()
+    update_statistics()
+    update_analytics()
+    update_plots()
+    update_events()
 
 
 def update_current_tab():
@@ -27,33 +36,29 @@ def update_current_tab():
     match current_tab:  #type: ignore
         case "Statistics": #type: ignore
             update_statistics()
-        case "analytics_tab": #type: ignore
+        case "Analytics": #type: ignore
             update_analytics()
-        case "plots_tab": #type: ignore
+        case "Plots": #type: ignore
             update_plots()
-        case "events_tab":
+        case "Event Viewer":
             update_events()
 
 def update_statistics():
     global current_timeline
-    summary.update(current_timeline)
-    if len(current_timeline.statistics.chunks.by_activity()) > 1:
-        by_activity.set_visible(True)
-        by_activity.update(current_timeline)
-    else:
-        by_activity.set_visible(False)
-
-    if len(current_timeline.statistics.chunks.by_day()) > 1:
-        by_day.set_visible(True)
-        by_day.update(current_timeline)
-    else:
-        by_day.set_visible(False)
+    if statistics is not None:
+        statistics.update(current_timeline)
 def update_analytics():
-    pass
+    global current_timeline
+    if analytics is not None:
+        analytics.update(current_timeline)
 def update_plots():
-    pass
+    global current_timeline
+    if plots is not None:
+        plots.update(current_timeline)
 def update_events():
-    pass
+    global current_timeline
+    if events is not None:
+        events.update(current_timeline)
 
 
 
@@ -76,31 +81,19 @@ with ui.row().classes("w-full items-start"):
             # ---------------- Statistics ----------------
 
             with ui.tab_panel(statistics_tab):
-
-                summary = SummaryView()
-                by_activity = ActivityView()
-                by_day = DailyView()
+                statistics = StatisticsView()
             with ui.tab_panel(analytics_tab):
-
-                with ui.card().classes("w-full"):
-                    ui.label("Analytics")
-                    ui.label("Coming soon...")
+                analytics = AnalyticsView()
 
             # ---------------- Plots ----------------
 
             with ui.tab_panel(plots_tab):
-
-                with ui.card().classes("w-full"):
-                    ui.label("Plots")
-                    ui.label("Coming soon...")
+                plots = PlotsView()
 
             # ---------------- Events ----------------
 
             with ui.tab_panel(events_tab):
-
-                with ui.card().classes("w-full"):
-                    ui.label("Event Viewer")
-                    ui.label("Coming soon...")
+                events = EventsView()
 
         
         refresh()

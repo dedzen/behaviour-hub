@@ -35,6 +35,10 @@ class FilterState:
 
 
 class FilterPanel:
+    DEFAULT_DURATION = {
+        "min": 0,
+        "max": 12 * 3600,
+    }
 
     def __init__(self, timeline: Timeline, on_apply=None):
         self.base = timeline
@@ -83,12 +87,12 @@ class FilterPanel:
         ).classes("w-full")
         ui.label("Devices")
 
-        ui.select(
+        self.devices = ui.select(
             self.base.metadata.devices,
             multiple=True,
             on_change=lambda e:
                 self.state.sources.update(e.value or []), #type: ignore
-        )
+        ).classes("w-full")
 
         ui.label("Activities")
 
@@ -107,7 +111,7 @@ class FilterPanel:
                     for activity in activities
                 ],
             })
-        ui.tree(
+        self.activities = ui.tree(
             tree,
             tick_strategy="leaf",
             on_tick=lambda e:
@@ -133,18 +137,35 @@ class FilterPanel:
         self.range = ui.range(
             min=0,
             max=12 * 3600,
-            value={
-                "min": 0,
-                "max": 12 * 3600,
-            },
+            value=self.DEFAULT_DURATION,
             on_change=self._duration_changed,
         ).classes("w-full")
 
+        with ui.row().classes("w-full"):
+            ui.button(
+                "Apply",
+                on_click=lambda : self.on_apply(), #type: ignore
+            )
+            ui.button(
+                "Reset",
+                on_click=self.reset,
+            )
 
-        ui.button(
-            "Apply",
-            on_click=lambda : self.on_apply(), #type: ignore
+    def reset(self):
+        self.preset.set_value("All time")
+        self.devices.set_value([])
+        self.activities.untick()
+        self.range.set_value(self.DEFAULT_DURATION)
+        self.duration_label.set_text("")
+
+        self.state = FilterState(
+            activities=set(),
+            sources=set(),
         )
+
+        if self.on_apply is not None:
+            self.on_apply()
+
     def _preset_changed(self, e):
         self.state.preset = e.value
     def _duration_changed(self, e):

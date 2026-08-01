@@ -10,6 +10,7 @@ from timeline.storage.repository import SQLiteRepository
 from timeline.domain.enums import DeviceSource
 from timeline.domain.models import *
 from timeline.statistics.suite import StatisticsSuite
+from timeline.analytics.suite import AnalyticsSuite
 from timeline.api.metadata import Metadata 
 
 @dataclass(frozen=True, slots=True)
@@ -210,13 +211,16 @@ class Timeline:
             execute_options={"parameters": params},
         )
         return df.with_columns(
-        pl.col("start_timestamp").str.to_datetime(),
-        pl.col("end_timestamp").str.to_datetime(),
+        pl.col("start_timestamp").cast(pl.Utf8).str.to_datetime(),
+        pl.col("end_timestamp").cast(pl.Utf8).str.to_datetime(),
         )
 
     @property
     def statistics(self):
         return StatisticsSuite(self)    
+    @property
+    def analytics(self):
+        return AnalyticsSuite(self)
     @property
     def metadata(self):
         return Metadata(self.repo, self.query)
