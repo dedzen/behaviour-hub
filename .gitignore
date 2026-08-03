@@ -5,3 +5,4 @@ data/
 timeline.db
 .ipynb_checkpoints
 .vscode/
+backups/

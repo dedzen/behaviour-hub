@@ -40,6 +40,7 @@ class Query:
         self,
         *,
         timestamp_column: str = "timestamp",
+        source_column: str = "source",
     ) -> tuple[str, list]:
 
         where: list[str] = []
@@ -80,7 +81,7 @@ class Query:
         self._where_in(
             where,
             params,
-            "source",
+            source_column,
             self.sources,
             transform=lambda s: s.value,
         )

@@ -21,6 +21,11 @@ class SQLiteRepository:
 
 
     def insert_event(self, event: Event):
+        existing = self.find_duplicate_event(event)
+        if existing is not None:
+            event.id = existing.id
+            return False
+
         cursor = self.conn.execute(
             """
             INSERT INTO events(
@@ -36,12 +41,14 @@ class SQLiteRepository:
         )
 
         event.id = cursor.lastrowid
+        return True
 
     def load_events(self, query: Query | None = None) -> list[Event]:
         return self._load_table(
                     "events",
                     Event,
                     timestamp_column="timestamp",
+                    source_column="device_source",
                     query=query,
                 )
     def _insert_chunk(self, chunk: Chunk) -> Chunk:
@@ -131,12 +138,14 @@ class SQLiteRepository:
         table: str,
         *,
         timestamp_column: str = "timestamp",
+        source_column: str = "source",
         query: Query | None = None,
     ) -> tuple[str, list]:
         query = query or Query()
 
         where, params = query.where_clause(
             timestamp_column=timestamp_column,
+            source_column=source_column,
         )
 
         sql = f"""
@@ -153,12 +162,14 @@ class SQLiteRepository:
         model: type[T],
         *,
         timestamp_column: str = "timestamp",
+        source_column: str = "source",
         query: Query | None = None,
     ) -> list[T]:
 
         sql, params = self._select_sql(
             table,
             timestamp_column=timestamp_column,
+            source_column=source_column,
             query=query,
         )
 
@@ -203,6 +214,13 @@ class SQLiteRepository:
             )
 
     def update(self, obj) -> None:
+        if isinstance(obj, Event):
+            duplicate = self.find_duplicate_event(obj, exclude_id=obj.id)
+            if duplicate is not None:
+                self._merge_events(duplicate.id, obj.id) # type: ignore[arg-type]
+                obj.id = duplicate.id
+                return
+
         self.conn.execute(
             obj.UPDATE_SQL,
             obj.to_db_tuple() + (obj.id,),
@@ -220,6 +238,103 @@ class SQLiteRepository:
         self.conn.execute(
             f"DELETE FROM {model.TABLE} WHERE id = ?",
             (id,),
+        )
+
+    def find_duplicate_event(
+        self,
+        event: Event,
+        *,
+        exclude_id: int | None = None,
+    ) -> Event | None:
+        row = self.conn.execute(
+            """
+            SELECT *
+            FROM events
+            WHERE timestamp = ?
+              AND event_kind = ?
+              AND IFNULL(category, '') = IFNULL(?, '')
+              AND IFNULL(name, '') = IFNULL(?, '')
+              AND (? IS NULL OR id != ?)
+            ORDER BY id
+            LIMIT 1
+            """,
+            (
+                event.timestamp.isoformat(sep=" "),
+                event.event_kind.value,
+                event.category,
+                event.name,
+                exclude_id,
+                exclude_id,
+            ),
+        ).fetchone()
+
+        return None if row is None else Event.from_row(row)
+
+    def deduplicate_events(self) -> int:
+        duplicate_groups = self.conn.execute(
+            """
+            SELECT
+                timestamp,
+                event_kind,
+                IFNULL(category, '') AS category_key,
+                IFNULL(name, '') AS name_key
+            FROM events
+            GROUP BY
+                timestamp,
+                event_kind,
+                category_key,
+                name_key
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+
+        removed = 0
+
+        for group in duplicate_groups:
+            rows = self.conn.execute(
+                """
+                SELECT id
+                FROM events
+                WHERE timestamp = ?
+                  AND event_kind = ?
+                  AND IFNULL(category, '') = ?
+                  AND IFNULL(name, '') = ?
+                ORDER BY id
+                """,
+                (
+                    group["timestamp"],
+                    group["event_kind"],
+                    group["category_key"],
+                    group["name_key"],
+                ),
+            ).fetchall()
+
+            keep_id = rows[0]["id"]
+            for row in rows[1:]:
+                self._merge_events(keep_id, row["id"])
+                removed += 1
+
+        return removed
+
+    def _merge_events(self, keep_id: int, drop_id: int) -> None:
+        if keep_id == drop_id:
+            return
+
+        self.conn.execute(
+            "UPDATE points SET event_id = ? WHERE event_id = ?",
+            (keep_id, drop_id),
+        )
+        self.conn.execute(
+            "UPDATE chunks SET start_event_id = ? WHERE start_event_id = ?",
+            (keep_id, drop_id),
+        )
+        self.conn.execute(
+            "UPDATE chunks SET end_event_id = ? WHERE end_event_id = ?",
+            (keep_id, drop_id),
+        )
+        self.conn.execute(
+            "DELETE FROM events WHERE id = ?",
+            (drop_id,),
         )
 
     def distinct(

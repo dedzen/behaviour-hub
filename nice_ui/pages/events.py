@@ -5,8 +5,10 @@ from datetime import datetime
 from nicegui import ui
 
 from timeline.api.timeline import Timeline
+from timeline.domain.interval_builder import IntervalBuilder
 from timeline.domain.enums import DeviceSource, EventKind
 from timeline.domain.models import Event
+from timeline.storage.repository import SQLiteRepository
 
 
 def parse_event_timestamp(value: str) -> datetime:
@@ -32,36 +34,20 @@ def event_matches_search(event: Event, search: str) -> bool:
     return any(needle in value.lower() for value in haystack)
 
 
-class EventsView:
-    def __init__(self):
+def rebuild_chunks_for_repo(repo: SQLiteRepository) -> list[str]:
+    repo.deduplicate_events()
+    events = repo.load_events()
+    chunks, warnings = IntervalBuilder.build(events)
+    repo.replace_chunks(chunks)
+    repo.commit()
+    return warnings
+
+
+class EventEditor:
+    def __init__(self, on_change=None):
         self.timeline: Timeline | None = None
         self.selected_event: Event | None = None
-        self.search_term = ""
-        self.events: list[Event] = []
-
-        with ui.card().classes("w-full"):
-            with ui.row().classes("w-full items-center justify-between"):
-                ui.label("Events").classes("text-h6")
-                self.count = ui.label("0 events").classes("text-caption text-grey-7")
-            self.search = ui.input(
-                "Search events",
-                placeholder="Timestamp, source, kind, category, name...",
-                on_change=self._search_changed,
-            ).props("clearable").classes("w-full")
-            self.table = ui.table(
-                columns=[
-                    {"name": "id", "label": "ID", "field": "id"},
-                    {"name": "timestamp", "label": "Timestamp", "field": "timestamp"},
-                    {"name": "source", "label": "Source", "field": "source"},
-                    {"name": "kind", "label": "Kind", "field": "kind"},
-                    {"name": "category", "label": "Category", "field": "category"},
-                    {"name": "name", "label": "Name", "field": "name"},
-                ],
-                rows=[],
-                row_key="id",
-                pagination={"rowsPerPage": 25, "sortBy": "timestamp", "descending": True},
-            ).classes("w-full")
-            self.table.on("rowClick", self._row_clicked)
+        self.on_change = on_change
 
         with ui.dialog() as self.dialog, ui.card().classes("w-[32rem] max-w-full"):
             ui.label("Edit Event").classes("text-h6")
@@ -83,35 +69,18 @@ class EventsView:
                     ui.button("Cancel", on_click=self.dialog.close).props("flat")
                     ui.button("Save", on_click=self._save)
 
-    def update(self, timeline: Timeline):
+    def bind(self, timeline: Timeline):
         self.timeline = timeline
-        self.events = timeline.events()
-        self._render_rows()
 
-    def _render_rows(self):
-        visible_events = [
-            event for event in self.events
-            if event_matches_search(event, self.search_term)
-        ]
-        self.table.rows = [self._event_row(event) for event in visible_events]
-        self.count.set_text(f"{len(visible_events)} of {len(self.events)} events")
-        self.table.update()
-
-    def _search_changed(self, event):
-        self.search_term = event.value or ""
-        self._render_rows()
-
-    def _row_clicked(self, event):
-        row = event.args[1] if len(event.args) > 1 else None
-        if not row or self.timeline is None:
+    def open(self, timeline: Timeline, event_id: int | None):
+        self.bind(timeline)
+        if event_id is None:
+            ui.notify("Event not found", type="warning")
             return
 
-        event_id = row.get("id")
-        selected = self.timeline.repo.get(Event, event_id)
-
+        selected = timeline.repo.get(Event, event_id)
         if selected is None:
             ui.notify("Event not found", type="warning")
-            self.update(self.timeline)
             return
 
         self.selected_event = selected
@@ -139,9 +108,11 @@ class EventsView:
 
         self.timeline.repo.update(self.selected_event)
         self.timeline.repo.commit()
+        warnings = rebuild_chunks_for_repo(self.timeline.repo)
         self.dialog.close()
-        self.update(self.timeline)
-        ui.notify("Event updated")
+        if self.on_change is not None:
+            self.on_change()
+        notify_event_change("Event updated", warnings)
 
     def _delete(self):
         if self.selected_event is None or self.selected_event.id is None or self.timeline is None:
@@ -149,10 +120,86 @@ class EventsView:
 
         self.timeline.repo.delete(Event, self.selected_event.id)
         self.timeline.repo.commit()
+        warnings = rebuild_chunks_for_repo(self.timeline.repo)
         self.dialog.close()
         self.selected_event = None
-        self.update(self.timeline)
-        ui.notify("Event deleted")
+        if self.on_change is not None:
+            self.on_change()
+        notify_event_change("Event deleted", warnings)
+
+
+def notify_event_change(message: str, warnings: list[str]):
+    if warnings:
+        ui.notify(
+            f"{message}; chunks rebuilt with {len(warnings)} warnings",
+            type="warning",
+        )
+        return
+
+    ui.notify(f"{message}; chunks rebuilt")
+
+
+class EventsView:
+    def __init__(self):
+        self.timeline: Timeline | None = None
+        self.search_term = ""
+        self.events: list[Event] = []
+
+        with ui.card().classes("w-full"):
+            with ui.row().classes("w-full items-center justify-between"):
+                ui.label("Events").classes("text-h6")
+                self.count = ui.label("0 events").classes("text-caption text-grey-7")
+            self.search = ui.input(
+                "Search events",
+                placeholder="Timestamp, source, kind, category, name...",
+                on_change=self._search_changed,
+            ).props("clearable").classes("w-full")
+            self.table = ui.table(
+                columns=[
+                    {"name": "id", "label": "ID", "field": "id"},
+                    {"name": "timestamp", "label": "Timestamp", "field": "timestamp"},
+                    {"name": "source", "label": "Source", "field": "source"},
+                    {"name": "kind", "label": "Kind", "field": "kind"},
+                    {"name": "category", "label": "Category", "field": "category"},
+                    {"name": "name", "label": "Name", "field": "name"},
+                ],
+                rows=[],
+                row_key="id",
+                pagination={"rowsPerPage": 25, "sortBy": "timestamp", "descending": True},
+            ).classes("w-full")
+            self.table.on("rowClick", self._row_clicked)
+
+        self.editor = EventEditor(on_change=self._editor_changed)
+
+    def update(self, timeline: Timeline):
+        self.timeline = timeline
+        self.events = timeline.events()
+        self._render_rows()
+
+    def _render_rows(self):
+        visible_events = [
+            event for event in self.events
+            if event_matches_search(event, self.search_term)
+        ]
+        self.table.rows = [self._event_row(event) for event in visible_events]
+        self.count.set_text(f"{len(visible_events)} of {len(self.events)} events")
+        self.table.update()
+
+    def _search_changed(self, event):
+        self.search_term = event.value or ""
+        self._render_rows()
+
+    def _row_clicked(self, event):
+        row = event.args[1] if len(event.args) > 1 else None
+        if not row or self.timeline is None:
+            return
+
+        event_id = row.get("id")
+        self.editor.open(self.timeline, event_id)
+
+    def _editor_changed(self):
+        if self.timeline is not None:
+            self.update(self.timeline)
 
     @staticmethod
     def _event_row(event: Event) -> dict:

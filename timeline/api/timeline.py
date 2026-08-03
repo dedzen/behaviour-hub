@@ -13,6 +13,11 @@ from timeline.statistics.suite import StatisticsSuite
 from timeline.analytics.suite import AnalyticsSuite
 from timeline.api.metadata import Metadata 
 
+
+def parse_db_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value).replace(tzinfo=None)
+
+
 @dataclass(frozen=True, slots=True)
 class Timeline:
     repo: SQLiteRepository
@@ -210,9 +215,142 @@ class Timeline:
             connection=self.repo.conn,
             execute_options={"parameters": params},
         )
+        return self._normalize_chunk_dataframe(df)
+
+    def to_clipped_polars(self) -> pl.DataFrame:
+        sql, params = self._overlapping_chunks_sql()
+
+        df = pl.read_database(
+            query=sql,
+            connection=self.repo.conn,
+            execute_options={"parameters": params},
+        )
+
+        df = self._normalize_chunk_dataframe(df)
+
+        if df.is_empty():
+            return df
+
+        expressions = []
+        query_start = self._query_datetime(self.query.start)
+        query_end = self._query_datetime(self.query.end)
+
+        if query_start is not None:
+            expressions.append(
+                pl.max_horizontal(
+                    pl.col("start_timestamp"),
+                    pl.lit(query_start),
+                ).alias("start_timestamp")
+            )
+
+        if query_end is not None:
+            expressions.append(
+                pl.min_horizontal(
+                    pl.col("end_timestamp"),
+                    pl.lit(query_end),
+                ).alias("end_timestamp")
+            )
+
+        if expressions:
+            df = df.with_columns(expressions)
+
+        df = df.with_columns(
+            (
+                (pl.col("end_timestamp") - pl.col("start_timestamp"))
+                .dt.total_seconds()
+                .cast(pl.Int64)
+            ).alias("duration_seconds")
+        )
+
+        if self.query.min_duration is not None:
+            df = df.filter(pl.col("duration_seconds") >= self.query.min_duration)
+
+        if self.query.max_duration is not None:
+            df = df.filter(pl.col("duration_seconds") <= self.query.max_duration)
+
+        return df.filter(pl.col("duration_seconds") >= 0)
+
+    def _overlapping_chunks_sql(self) -> tuple[str, list]:
+        where: list[str] = []
+        params: list = []
+        query_start = self._query_datetime(self.query.start)
+        query_end = self._query_datetime(self.query.end)
+
+        if query_start is not None:
+            where.append("end_timestamp > ?")
+            params.append(query_start.isoformat(sep=" "))
+
+        if query_end is not None:
+            where.append("start_timestamp < ?")
+            params.append(query_end.isoformat(sep=" "))
+
+        self.query._where_in(where, params, "category", self.query.categories)
+        self.query._where_in(where, params, "name", self.query.activities)
+        self.query._where_in(
+            where,
+            params,
+            "source",
+            self.query.sources,
+            transform=lambda source: source.value,
+        )
+
+        if self.query.weekday is not None:
+            where.append("CAST(strftime('%w', start_timestamp) AS INTEGER) = ?")
+            params.append(self.query.weekday)
+
+        if self.query.search is not None:
+            where.append("(name LIKE ? OR category LIKE ?)")
+            pattern = f"%{self.query.search}%"
+            params.extend([pattern, pattern])
+
+        where_sql = ""
+        if where:
+            where_sql = "WHERE " + " AND ".join(where)
+
+        return (
+            f"""
+            SELECT *
+            FROM chunks
+            {where_sql}
+            ORDER BY start_timestamp
+            """,
+            params,
+        )
+
+    @staticmethod
+    def _query_datetime(value: date | datetime | None) -> datetime | None:
+        if value is None:
+            return None
+
+        if isinstance(value, datetime):
+            return value
+
+        return datetime.combine(value, time.min)
+
+    @staticmethod
+    def _normalize_chunk_dataframe(df: pl.DataFrame) -> pl.DataFrame:
+        columns = {
+            "id": pl.Int64,
+            "start_timestamp": pl.Datetime,
+            "end_timestamp": pl.Datetime,
+            "duration_seconds": pl.Int64,
+            "category": pl.Utf8,
+            "name": pl.Utf8,
+            "source": pl.Utf8,
+            "start_event_id": pl.Int64,
+            "end_event_id": pl.Int64,
+        }
+
+        if df.is_empty() and not df.columns:
+            return pl.DataFrame(schema=columns)
+
         return df.with_columns(
-        pl.col("start_timestamp").cast(pl.Utf8).str.to_datetime(),
-        pl.col("end_timestamp").cast(pl.Utf8).str.to_datetime(),
+            pl.col("start_timestamp")
+            .cast(pl.Utf8)
+            .map_elements(parse_db_datetime, return_dtype=pl.Datetime),
+            pl.col("end_timestamp")
+            .cast(pl.Utf8)
+            .map_elements(parse_db_datetime, return_dtype=pl.Datetime),
         )
 
     @property

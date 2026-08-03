@@ -13,4 +13,4 @@ class AnalyticsSuite:
 
     @property
     def chunks(self):
-        return ChunkAnalytics(self.timeline.to_polars())
+        return ChunkAnalytics(self.timeline.to_clipped_polars())

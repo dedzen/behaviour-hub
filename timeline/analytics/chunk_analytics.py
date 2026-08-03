@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime, timedelta
 from typing import Literal
 
 import polars as pl
@@ -75,8 +76,10 @@ class ChunkAnalytics:
 
         group_columns = ["period", *self._columns(by)]
 
+        period_df = self._split_by_period(period)
+
         result = (
-            self.df
+            period_df
             .with_columns(
                 pl.col("start_timestamp")
                 .dt.truncate(PERIOD_EVERY[period])
@@ -90,6 +93,63 @@ class ChunkAnalytics:
             result = result.sort(group_columns)
 
         return result
+
+    def _split_by_period(self, period: Period) -> pl.DataFrame:
+        rows = []
+
+        for row in self.df.to_dicts():
+            start = row["start_timestamp"]
+            end = row["end_timestamp"]
+
+            while start < end:
+                period_end = self._next_period_start(start, period)
+                segment_end = min(end, period_end)
+                segment = dict(row)
+                segment["start_timestamp"] = start
+                segment["end_timestamp"] = segment_end
+                segment["duration_seconds"] = int(
+                    (segment_end - start).total_seconds()
+                )
+                rows.append(segment)
+                start = segment_end
+
+        if not rows:
+            return self.df.head(0)
+
+        return pl.DataFrame(rows, schema=self.df.schema)
+
+    @classmethod
+    def _next_period_start(cls, value: datetime, period: Period) -> datetime:
+        current = cls._period_start(value, period)
+
+        match period:
+            case "hour":
+                return current + timedelta(hours=1)
+            case "day":
+                return current + timedelta(days=1)
+            case "week":
+                return current + timedelta(days=7)
+            case "month":
+                if current.month == 12:
+                    return current.replace(year=current.year + 1, month=1)
+                return current.replace(month=current.month + 1)
+            case "year":
+                return current.replace(year=current.year + 1)
+
+    @staticmethod
+    def _period_start(value: datetime, period: Period) -> datetime:
+        match period:
+            case "hour":
+                return value.replace(minute=0, second=0, microsecond=0)
+            case "day":
+                return value.replace(hour=0, minute=0, second=0, microsecond=0)
+            case "week":
+                day_start = value.replace(hour=0, minute=0, second=0, microsecond=0)
+                return day_start - timedelta(days=day_start.weekday())
+            case "month":
+                return value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            case "year":
+                return value.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
 
     def share(
         self,

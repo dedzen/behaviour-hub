@@ -11,4 +11,4 @@ class StatisticsSuite:
         self.timeline = timeline
     @property
     def chunks(self):
-        return ChunkStatistics(self.timeline.to_polars())
+        return ChunkStatistics(self.timeline.to_clipped_polars())
