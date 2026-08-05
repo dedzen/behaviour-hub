@@ -70,3 +70,14 @@ CREATE TABLE IF NOT EXISTS context (
 
     source TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS day_markers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    day TEXT NOT NULL UNIQUE,
+
+    habits_json TEXT NOT NULL DEFAULT '{}',
+    people_json TEXT NOT NULL DEFAULT '[]',
+    quick_note_markdown TEXT NOT NULL DEFAULT '',
+    mood REAL
+);

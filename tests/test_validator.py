@@ -43,6 +43,22 @@ class ValidatorMultiSourceTest(unittest.TestCase):
 
             self.assertEqual(report.issues, [])
 
+    def test_interleaved_sources_do_not_close_or_mismatch_each_other(self):
+        with self._repo() as repo:
+            self._insert_events(
+                repo,
+                [
+                    event(DeviceSource.PC, EventKind.INTERVAL_START, 9, "Code"),
+                    event(DeviceSource.PHONE, EventKind.INTERVAL_START, 10, "Screen on"),
+                    event(DeviceSource.PHONE, EventKind.INTERVAL_END, 11, "Screen on"),
+                    event(DeviceSource.PC, EventKind.INTERVAL_END, 12, "Code"),
+                ],
+            )
+
+            report = Validator(repo).validate()
+
+            self.assertEqual(report.issues, [])
+
     def test_rejects_overlapping_events_from_same_source(self):
         with self._repo() as repo:
             self._insert_events(
@@ -92,6 +108,47 @@ class ValidatorMultiSourceTest(unittest.TestCase):
             report = Validator(repo).validate()
 
             self.assertEqual(warnings, [])
+            self.assertEqual(report.issues, [])
+
+    def test_interleaved_chunk_sources_do_not_overlap_each_other(self):
+        with self._repo() as repo:
+            events = self._insert_events(
+                repo,
+                [
+                    event(DeviceSource.PC, EventKind.POINT, 9, "Start code"),
+                    event(DeviceSource.PHONE, EventKind.POINT, 10, "Start phone"),
+                    event(DeviceSource.PC, EventKind.POINT, 12, "End code"),
+                    event(DeviceSource.PHONE, EventKind.POINT, 11, "End phone"),
+                ],
+            )
+            repo.replace_chunks(
+                [
+                    Chunk(
+                        start_timestamp=datetime(2026, 8, 1, 9),
+                        end_timestamp=datetime(2026, 8, 1, 12),
+                        duration_seconds=3 * 3600,
+                        category="Activity",
+                        name="Code",
+                        source=DeviceSource.PC,
+                        start_event_id=events[0].id,
+                        end_event_id=events[2].id,
+                    ),
+                    Chunk(
+                        start_timestamp=datetime(2026, 8, 1, 10),
+                        end_timestamp=datetime(2026, 8, 1, 11),
+                        duration_seconds=3600,
+                        category="Activity",
+                        name="Phone",
+                        source=DeviceSource.PHONE,
+                        start_event_id=events[1].id,
+                        end_event_id=events[3].id,
+                    ),
+                ]
+            )
+            repo.commit()
+
+            report = Validator(repo).validate()
+
             self.assertEqual(report.issues, [])
 
     def test_rejects_overlapping_chunks_from_same_source(self):

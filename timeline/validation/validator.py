@@ -1,7 +1,11 @@
 from timeline.storage.repository import SQLiteRepository
 from timeline.validation.report import ValidationIssue, ValidationReport, Severity
 from timeline.domain.enums import DeviceSource, EventKind
-from timeline.domain.models import Event
+from collections import defaultdict
+from datetime import date
+import json
+
+from timeline.domain.models import Chunk, Event
 
 
 class Validator:
@@ -17,41 +21,56 @@ class Validator:
         self._validate_points(report)
         self._validate_annotations(report)
         self._validate_context(report)
+        self._validate_day_markers(report)
 
         return report
 
     def _validate_events(self, report: ValidationReport) -> None:
         events = self.repo.load_events()
 
-        current_events: dict[DeviceSource, Event] = {}
+        for event in events:
+            self._validate_event_fields(report, event)
+
+        for source_events in self._group_events_by_source(events).values():
+            self._validate_event_source_state(report, source_events)
+
+    @staticmethod
+    def _group_events_by_source(events: list[Event]) -> dict[DeviceSource, list[Event]]:
+        grouped: dict[DeviceSource, list[Event]] = defaultdict(list)
+        for event in events:
+            grouped[event.device_source].append(event)
+        return grouped
+
+    @staticmethod
+    def _validate_event_fields(report: ValidationReport, event: Event) -> None:
+        if not event.category:
+            report.add(
+                ValidationIssue(
+                    Severity.ERROR,
+                    "events",
+                    event.id,
+                    "Missing category.",
+                )
+            )
+        if not event.name:
+            report.add(
+                ValidationIssue(
+                    Severity.ERROR,
+                    "events",
+                    event.id,
+                    "Missing activity name.",
+                )
+            )
+
+    @staticmethod
+    def _validate_event_source_state(
+        report: ValidationReport,
+        events: list[Event],
+    ) -> None:
+        current_event: Event | None = None
 
         for event in events:
-            #
-            # Basic checks
-            #
-            if not event.category:
-                report.add(
-                    ValidationIssue(
-                        Severity.ERROR,
-                        "events",
-                        event.id,
-                        "Missing category.",
-                    )
-                )
-            if not event.name:
-                report.add(
-                    ValidationIssue(
-                        Severity.ERROR,
-                        "events",
-                        event.id,
-                        "Missing activity name.",
-                    )
-                )
-            #
-            # State machine
-            #
             if event.event_kind == EventKind.INTERVAL_START:
-                current_event = current_events.get(event.device_source)
                 if current_event is not None:
                     report.add(
                         ValidationIssue(
@@ -66,9 +85,8 @@ class Validator:
                         )
                     )
                     continue
-                current_events[event.device_source] = event
+                current_event = event
             elif event.event_kind == EventKind.INTERVAL_END:
-                current_event = current_events.get(event.device_source)
                 if current_event is None:
                     report.add(
                         ValidationIssue(
@@ -122,7 +140,7 @@ class Validator:
                         )
                     )
                 if matches_current_event:
-                    current_events.pop(event.device_source, None)
+                    current_event = None
             elif event.event_kind == EventKind.POINT:
                 #
                 # Points don't affect interval state.
@@ -131,7 +149,7 @@ class Validator:
         #
         # EOF
         #
-        for current_event in current_events.values():
+        if current_event is not None:
             report.add(
                 ValidationIssue(
                     Severity.WARNING,
@@ -145,11 +163,26 @@ class Validator:
                 )
             )
     def _validate_chunks(self, report: ValidationReport):
-        previous_by_source = {}
+        chunks = self.repo.load_chunks()
 
-        for chunk in self.repo.load_chunks():
-            previous = previous_by_source.get(chunk.source)
+        for source_chunks in self._group_chunks_by_source(chunks).values():
+            self._validate_chunk_source(report, source_chunks)
 
+    @staticmethod
+    def _group_chunks_by_source(chunks: list[Chunk]) -> dict[DeviceSource, list[Chunk]]:
+        grouped: dict[DeviceSource, list[Chunk]] = defaultdict(list)
+        for chunk in chunks:
+            grouped[chunk.source].append(chunk)
+        return grouped
+
+    @staticmethod
+    def _validate_chunk_source(
+        report: ValidationReport,
+        chunks: list[Chunk],
+    ) -> None:
+        previous: Chunk | None = None
+
+        for chunk in chunks:
             if chunk.end_timestamp < chunk.start_timestamp:
                 report.add(
                     ValidationIssue(
@@ -173,10 +206,150 @@ class Validator:
                     )
                 )
 
-            previous_by_source[chunk.source] = chunk
+            previous = chunk
     def _validate_points(self, report: ValidationReport):
         pass
     def _validate_annotations(self, report: ValidationReport):
         pass
     def _validate_context(self, report: ValidationReport):
         pass
+    def _validate_day_markers(self, report: ValidationReport):
+        if not self._table_exists("day_markers"):
+            report.add(
+                ValidationIssue(
+                    Severity.WARNING,
+                    "day_markers",
+                    None,
+                    "day_markers table is missing.",
+                )
+            )
+            return
+
+        rows = self.repo.conn.execute(
+            """
+            SELECT
+                id,
+                day,
+                habits_json,
+                people_json,
+                quick_note_markdown,
+                mood
+            FROM day_markers
+            ORDER BY day
+            """
+        ).fetchall()
+
+        seen_days: set[str] = set()
+        for row in rows:
+            marker_id = row["id"]
+            marker_day = row["day"]
+
+            try:
+                date.fromisoformat(marker_day)
+            except (TypeError, ValueError):
+                report.add(
+                    ValidationIssue(
+                        Severity.ERROR,
+                        "day_markers",
+                        marker_id,
+                        "Day marker has invalid ISO date.",
+                    )
+                )
+
+            if marker_day in seen_days:
+                report.add(
+                    ValidationIssue(
+                        Severity.ERROR,
+                        "day_markers",
+                        marker_id,
+                        "Duplicate day marker.",
+                    )
+                )
+            seen_days.add(marker_day)
+
+            habits = self._json_value(
+                report,
+                marker_id,
+                row["habits_json"],
+                "habits_json",
+            )
+            if habits is not None:
+                if not isinstance(habits, dict) or not all(isinstance(value, bool) for value in habits.values()):
+                    report.add(
+                        ValidationIssue(
+                            Severity.ERROR,
+                            "day_markers",
+                            marker_id,
+                            "habits_json must be an object with boolean values.",
+                        )
+                    )
+
+            people = self._json_value(
+                report,
+                marker_id,
+                row["people_json"],
+                "people_json",
+            )
+            if people is not None:
+                if not isinstance(people, list) or not all(isinstance(value, str) for value in people):
+                    report.add(
+                        ValidationIssue(
+                            Severity.ERROR,
+                            "day_markers",
+                            marker_id,
+                            "people_json must be a list of strings.",
+                        )
+                    )
+
+            if row["quick_note_markdown"] is None:
+                report.add(
+                    ValidationIssue(
+                        Severity.ERROR,
+                        "day_markers",
+                        marker_id,
+                        "quick_note_markdown must not be null.",
+                    )
+                )
+
+            mood = row["mood"]
+            if mood is not None and not isinstance(mood, (int, float)):
+                report.add(
+                    ValidationIssue(
+                        Severity.ERROR,
+                        "day_markers",
+                        marker_id,
+                        "mood must be numeric or null.",
+                    )
+                )
+
+    @staticmethod
+    def _json_value(
+        report: ValidationReport,
+        marker_id: int,
+        raw: str,
+        column: str,
+    ):
+        try:
+            return json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            report.add(
+                ValidationIssue(
+                    Severity.ERROR,
+                    "day_markers",
+                    marker_id,
+                    f"{column} must contain valid JSON.",
+                )
+            )
+            return None
+
+    def _table_exists(self, table: str) -> bool:
+        row = self.repo.conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = ?
+            """,
+            (table,),
+        ).fetchone()
+        return row is not None

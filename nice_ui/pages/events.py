@@ -140,33 +140,49 @@ def notify_event_change(message: str, warnings: list[str]):
 
 
 class EventsView:
-    def __init__(self):
+    def __init__(self, *, compact: bool = False, framed: bool = True):
         self.timeline: Timeline | None = None
         self.search_term = ""
         self.events: list[Event] = []
+        self.compact = compact
 
-        with ui.card().classes("w-full"):
+        container = ui.card() if framed else ui.column()
+        container_classes = "w-full"
+        if compact and framed:
+            container_classes += " shadow-sm border border-gray-200 bg-gray-50"
+
+        with container.classes(container_classes):
             with ui.row().classes("w-full items-center justify-between"):
-                ui.label("Events").classes("text-h6")
+                title_classes = "text-subtitle2 text-grey-8" if compact else "text-h6"
+                ui.label("Event Viewer" if compact else "Events").classes(title_classes)
                 self.count = ui.label("0 events").classes("text-caption text-grey-7")
             self.search = ui.input(
-                "Search events",
+                "Search",
                 placeholder="Timestamp, source, kind, category, name...",
                 on_change=self._search_changed,
             ).props("clearable").classes("w-full")
+            columns = [
+                {"name": "timestamp", "label": "Time", "field": "timestamp"},
+                {"name": "source", "label": "Source", "field": "source"},
+                {"name": "name", "label": "Name", "field": "name"},
+            ] if compact else [
+                {"name": "id", "label": "ID", "field": "id"},
+                {"name": "timestamp", "label": "Timestamp", "field": "timestamp"},
+                {"name": "source", "label": "Source", "field": "source"},
+                {"name": "kind", "label": "Kind", "field": "kind"},
+                {"name": "category", "label": "Category", "field": "category"},
+                {"name": "name", "label": "Name", "field": "name"},
+            ]
             self.table = ui.table(
-                columns=[
-                    {"name": "id", "label": "ID", "field": "id"},
-                    {"name": "timestamp", "label": "Timestamp", "field": "timestamp"},
-                    {"name": "source", "label": "Source", "field": "source"},
-                    {"name": "kind", "label": "Kind", "field": "kind"},
-                    {"name": "category", "label": "Category", "field": "category"},
-                    {"name": "name", "label": "Name", "field": "name"},
-                ],
+                columns=columns,
                 rows=[],
                 row_key="id",
-                pagination={"rowsPerPage": 25, "sortBy": "timestamp", "descending": True},
-            ).classes("w-full")
+                pagination={
+                    "rowsPerPage": 10 if compact else 25,
+                    "sortBy": "timestamp",
+                    "descending": True,
+                },
+            ).classes("w-full text-caption" if compact else "w-full")
             self.table.on("rowClick", self._row_clicked)
 
         self.editor = EventEditor(on_change=self._editor_changed)

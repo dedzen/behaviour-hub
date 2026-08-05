@@ -10,14 +10,17 @@ from timeline.ingest.embed import import_embed_csv
 from timeline.storage.repository import SQLiteRepository
 from timeline.api.timeline import Timeline
 
+from nice_ui.keyboard_shortcuts import KeyboardShortcut, shortcut_script
 from nice_ui.pages.filter_panel import FilterPanel
 from nice_ui.pages.statistics import StatisticsView
 from nice_ui.pages.analytics import AnalyticsView
 from nice_ui.pages.plots import PlotsView
 from nice_ui.pages.events import EventsView
-from nice_ui.pages.day_timeline import DayTimelineView
+from nice_ui.pages.screen_time import ScreenTimeIntersectionView
+from nice_ui.pages.calendar import CalendarPage
 
 repo = SQLiteRepository(Path("timeline.db"))
+repo.ensure_schema()
 timeline = Timeline(repo)
 DATABASE_PATH = Path("timeline.db")
 EMBED_INCOMING_PATH = Path("data/embed/incoming.csv")
@@ -28,7 +31,7 @@ statistics: StatisticsView | None = None
 analytics: AnalyticsView | None = None
 plots: PlotsView | None = None
 events: EventsView | None = None
-day_timeline: DayTimelineView | None = None
+screen_time: ScreenTimeIntersectionView | None = None
 filters: FilterPanel | None = None
 tabs = None
 
@@ -38,6 +41,8 @@ def build_header(active_page: str):
         match event.value:
             case "Main":
                 ui.navigate.to("/")
+            case "Calendar":
+                ui.navigate.to("/calendar")
             case "Import/Export":
                 ui.navigate.to("/import-export")
 
@@ -47,6 +52,7 @@ def build_header(active_page: str):
             "dense shrink stretch indicator-color=white"
         ) as page_tabs:
             ui.tab("Main", icon="dashboard")
+            ui.tab("Calendar", icon="calendar_month")
             ui.tab("Import/Export", icon="sync_alt")
             page_tabs.on_value_change(navigate)
 
@@ -100,6 +106,41 @@ def clear_embed_log(ip: str) -> str:
     return f"Cleared log on {ip}"
 
 
+def download_android_log(ip: str) -> str:
+    ip = ip.strip()
+    if not ip:
+        raise ValueError("Phone IP is required")
+
+    ANDROID_UNLOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    url = f"http://{ip}/unlock-events.jsonl"
+
+    try:
+        with urllib.request.urlopen(url, timeout=10.0) as response:
+            data = response.read()
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Failed to download Android log from {ip}: {exc}") from exc
+
+    ANDROID_UNLOCK_PATH.write_bytes(data)
+    return f"Downloaded {len(data)} bytes to {ANDROID_UNLOCK_PATH}"
+
+
+def clear_android_log(ip: str) -> str:
+    ip = ip.strip()
+    if not ip:
+        raise ValueError("Phone IP is required")
+
+    url = f"http://{ip}/unlock-events.jsonl"
+    request = urllib.request.Request(url, method="DELETE")
+
+    try:
+        with urllib.request.urlopen(request, timeout=10.0) as response:
+            response.read()
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Failed to clear Android log on {ip}: {exc}") from exc
+
+    return f"Cleared Android log on {ip}"
+
+
 def import_embed_log() -> str:
     if not EMBED_INCOMING_PATH.exists():
         raise FileNotFoundError(f"No downloaded log at {EMBED_INCOMING_PATH}")
@@ -112,10 +153,14 @@ def import_embed_log() -> str:
             inserted += int(import_repo.insert_event(event))
 
     skipped = len(events) - inserted
+    rebuild_message = rebuild_chunks()
     if skipped:
-        return f"Imported {inserted} embed events and skipped {skipped} duplicates"
+        return (
+            f"Imported {inserted} embed events and skipped {skipped} duplicates. "
+            f"{rebuild_message}"
+        )
 
-    return f"Imported {inserted} embed events"
+    return f"Imported {inserted} embed events. {rebuild_message}"
 
 
 def import_android_log(filename: str, strategy: str) -> str:
@@ -136,8 +181,15 @@ def import_android_log(filename: str, strategy: str) -> str:
         parts.append(f"ignored {result.ignored_events} unrelated events")
     if result.dropped_orphan_starts:
         parts.append(f"dropped {result.dropped_orphan_starts} orphan starts")
+    if result.dropped_short_chunks:
+        parts.append(f"dropped {result.dropped_short_chunks} chunks shorter than 20s")
+    if result.anomalies:
+        parts.append(f"reported {len(result.anomalies)} transition anomalies")
+    if result.unknown_time_seconds:
+        parts.append(f"reported {result.unknown_time_seconds:.3f}s unknown state")
     if skipped:
         parts.append(f"skipped {skipped} duplicates")
+    parts.append(rebuild_chunks())
     return ", ".join(parts)
 
 
@@ -166,6 +218,18 @@ def import_section(title: str, actions: list[tuple[str, str]]):
                 ).props("outline")
 
 
+def main_shortcut_script() -> str:
+    return shortcut_script(
+        "main",
+        [
+            KeyboardShortcut("1", ".main-tab-shortcut-1"),
+            KeyboardShortcut("2", ".main-tab-shortcut-2"),
+            KeyboardShortcut("3", ".main-tab-shortcut-3"),
+            KeyboardShortcut("4", ".main-tab-shortcut-4"),
+        ],
+    )
+
+
 def refresh():
     global current_timeline
     if filters is None:
@@ -174,8 +238,8 @@ def refresh():
     update_statistics()
     update_analytics()
     update_plots()
+    update_screen_time()
     update_events()
-    update_day_timeline()
 
 
 def update_current_tab():
@@ -192,10 +256,8 @@ def update_current_tab():
             update_analytics()
         case "Plots": #type: ignore
             update_plots()
-        case "Event Viewer":
-            update_events()
-        case "Day":
-            update_day_timeline()
+        case "Screen Time":
+            update_screen_time()
 
 def update_statistics():
     global current_timeline
@@ -209,21 +271,17 @@ def update_plots():
     global current_timeline
     if plots is not None:
         plots.update(current_timeline)
+def update_screen_time():
+    global current_timeline
+    if screen_time is not None:
+        screen_time.update(current_timeline)
 def update_events():
     global current_timeline
     if events is not None:
         events.update(current_timeline)
-def update_day_timeline():
-    global current_timeline
-    if day_timeline is not None:
-        day_timeline.update(current_timeline)
-
-
-
-
 @ui.page("/")
 def main_page():
-    global filters, statistics, analytics, plots, events, day_timeline, tabs
+    global filters, statistics, analytics, plots, events, screen_time, tabs
 
     build_header("Main")
 
@@ -233,13 +291,12 @@ def main_page():
             filters = FilterPanel(timeline)
             filters.on_apply = refresh
 
-        with ui.column().classes("flex-grow"):
+        with ui.column().classes("flex-grow min-w-0"):
             with ui.tabs().classes("w-full") as tabs:
-                statistics_tab = ui.tab("Statistics")
-                analytics_tab = ui.tab("Analytics")
-                plots_tab = ui.tab("Plots")
-                day_tab = ui.tab("Day")
-                events_tab = ui.tab("Event Viewer")
+                statistics_tab = ui.tab("Statistics").classes("main-tab-shortcut-1")
+                analytics_tab = ui.tab("Analytics").classes("main-tab-shortcut-2")
+                plots_tab = ui.tab("Plots").classes("main-tab-shortcut-3")
+                screen_time_tab = ui.tab("Screen Time").classes("main-tab-shortcut-4")
                 tabs.on_value_change(lambda _: update_current_tab())
             with ui.tab_panels(tabs, value=analytics_tab).classes("w-full"):
 
@@ -255,18 +312,36 @@ def main_page():
                 with ui.tab_panel(plots_tab):
                     plots = PlotsView()
 
-                # ---------------- Day ----------------
+                # ---------------- Screen Time ----------------
 
-                with ui.tab_panel(day_tab):
-                    day_timeline = DayTimelineView()
+                with ui.tab_panel(screen_time_tab):
+                    screen_time = ScreenTimeIntersectionView()
 
-                # ---------------- Events ----------------
+        with ui.column().classes("w-12 shrink-0 items-center pt-2 opacity-60 hover:opacity-100"):
+            with ui.button(
+                icon="event_note",
+                on_click=lambda: events_dialog.open(),
+            ).props("flat round dense"):
+                ui.tooltip("Event viewer")
 
-                with ui.tab_panel(events_tab):
-                    events = EventsView()
+        with ui.dialog() as events_dialog:
+            with ui.column().classes("w-[56rem] max-w-[95vw] max-h-[90vh] bg-white p-4 rounded shadow-xl gap-3"):
+                with ui.row().classes("w-full items-center justify-between"):
+                    ui.label("Event Viewer").classes("text-h6")
+                    ui.button(
+                        icon="close",
+                        on_click=events_dialog.close,
+                    ).props("flat round dense")
+                events = EventsView(framed=False)
 
-            
             refresh()
+            ui.add_body_html(main_shortcut_script())
+
+
+@ui.page("/calendar")
+def calendar_page():
+    build_header("Calendar")
+    CalendarPage(timeline)
 
 
 @ui.page("/import-export")
@@ -278,7 +353,13 @@ def import_export_page():
 
         with ui.row().classes("w-full items-stretch gap-6"):
             with ui.column().classes("w-1/2 min-w-[22rem] gap-4"):
-                ui.label("Import").classes("text-h6")
+                with ui.row().classes("w-full items-center justify-between"):
+                    ui.label("Import").classes("text-h6")
+                    with ui.button(
+                        icon="build",
+                        on_click=lambda: notify_action(rebuild_chunks),
+                    ).props("flat round dense"):
+                        ui.tooltip("Rebuild chunks")
                 with ui.card().classes("w-full"):
                     ui.label("Embed").classes("text-subtitle1")
                     embed_ip = ui.input(
@@ -305,30 +386,32 @@ def import_export_page():
                             icon="upload_file",
                             on_click=lambda: notify_action(import_embed_log),
                         ).props("outline")
-                        ui.button(
-                            "Rebuild chunks",
-                            icon="build",
-                            on_click=lambda: notify_action(rebuild_chunks),
-                        ).props("outline")
                 with ui.card().classes("w-full"):
                     ui.label("Phone").classes("text-subtitle1")
-                    android_path = ui.input(
-                        "JSONL path",
-                        value=str(ANDROID_UNLOCK_PATH),
+                    phone_ip = ui.input(
+                        "IP",
+                        value="192.168.3.44:8787",
                     ).classes("w-full")
                     with ui.row().classes("w-full gap-2"):
                         ui.button(
-                            "Import unlock events",
-                            icon="lock_open",
+                            "Download log",
+                            icon="download",
                             on_click=lambda: notify_action(
-                                lambda: import_android_log(android_path.value or "", "keyguard")
+                                lambda: download_android_log(phone_ip.value or "")
                             ),
                         ).props("outline")
                         ui.button(
-                            "Import screen events",
-                            icon="phone_android",
+                            "Clear log",
+                            icon="delete",
                             on_click=lambda: notify_action(
-                                lambda: import_android_log(android_path.value or "", "screen")
+                                lambda: clear_android_log(phone_ip.value or "")
+                            ),
+                        ).props("outline color=negative")
+                        ui.button(
+                            "Import log",
+                            icon="upload_file",
+                            on_click=lambda: notify_action(
+                                lambda: import_android_log(str(ANDROID_UNLOCK_PATH), "active_screen")
                             ),
                         ).props("outline")
                 import_section(

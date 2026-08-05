@@ -1,7 +1,7 @@
 import sqlite3
 from pathlib import Path
-from timeline.domain.models import Event, Chunk, Point, Annotation, Context
-from datetime import datetime
+from timeline.domain.models import Event, Chunk, Point, Annotation, Context, DayMarker
+from datetime import date, datetime
 from typing import TypeVar
 from timeline.api.query import Query
 
@@ -132,6 +132,69 @@ class SQLiteRepository:
 
         context.id = cursor.lastrowid
         return context
+
+    def get_day_marker(self, day: date | str) -> DayMarker | None:
+        selected_day = self._day_value(day)
+        row = self.conn.execute(
+            "SELECT * FROM day_markers WHERE day = ?",
+            (selected_day.isoformat(),),
+        ).fetchone()
+
+        return None if row is None else DayMarker.from_row(row)
+
+    def upsert_day_marker(self, marker: DayMarker) -> DayMarker:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO day_markers (
+                day,
+                habits_json,
+                people_json,
+                quick_note_markdown,
+                mood
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(day) DO UPDATE SET
+                habits_json = excluded.habits_json,
+                people_json = excluded.people_json,
+                quick_note_markdown = excluded.quick_note_markdown,
+                mood = excluded.mood
+            RETURNING id
+            """,
+            marker.to_db_tuple(),
+        )
+        marker.id = cursor.fetchone()["id"]
+        return marker
+
+    def load_day_markers(
+        self,
+        *,
+        start: date | str | None = None,
+        end: date | str | None = None,
+    ) -> list[DayMarker]:
+        where: list[str] = []
+        params: list[str] = []
+
+        if start is not None:
+            where.append("day >= ?")
+            params.append(self._day_value(start).isoformat())
+        if end is not None:
+            where.append("day <= ?")
+            params.append(self._day_value(end).isoformat())
+
+        sql = "SELECT * FROM day_markers"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY day"
+
+        return [DayMarker.from_row(row) for row in self.conn.execute(sql, params)]
+
+    def delete_day_marker(self, day_or_id: date | str | int) -> None:
+        if isinstance(day_or_id, int):
+            self.conn.execute("DELETE FROM day_markers WHERE id = ?", (day_or_id,))
+            return
+
+        selected_day = self._day_value(day_or_id)
+        self.conn.execute("DELETE FROM day_markers WHERE day = ?", (selected_day.isoformat(),))
 
     def _select_sql(
         self,
@@ -431,6 +494,14 @@ class SQLiteRepository:
 
         with schema_path.open("r", encoding="utf-8") as f:
             self.conn.executescript(f.read())
+
+    @staticmethod
+    def _day_value(value: date | str) -> date:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return date.fromisoformat(value)
 
     def __enter__(self):
         return self

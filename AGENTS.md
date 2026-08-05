@@ -80,7 +80,9 @@ uv run behaviour-hub import embed path/to/log.csv --database timeline.db
 Import Android JSONL:
 
 ```bash
-uv run behaviour-hub import android data/android/unlock-events.jsonl --database timeline.db --strategy keyguard
+uv run behaviour-hub import android-download 192.168.3.55:8080 --output data/android/unlock-events.jsonl
+uv run behaviour-hub import android data/android/unlock-events.jsonl --database timeline.db --strategy active_screen
+uv run behaviour-hub import android-clear 192.168.3.55:8080
 ```
 
 Rebuild chunks:
@@ -99,6 +101,12 @@ List events:
 
 ```bash
 uv run behaviour-hub events list --db timeline.db --day 2026-08-01
+```
+
+Export a daily markdown note:
+
+```bash
+uv run behaviour-hub export markdown 2026-08-01 --database timeline.db --output daily.md
 ```
 
 ## Testing Guidance

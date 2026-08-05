@@ -1,7 +1,8 @@
 from __future__ import annotations
-from typing import ClassVar
+from typing import Any, ClassVar
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
+import json
 from sqlite3 import Row
 from timeline.domain.enums import DeviceSource, EventKind
 
@@ -244,3 +245,59 @@ class Context:
         source = ?
     WHERE id = ?
     """
+
+
+@dataclass(slots=True)
+class DayMarker:
+    day: date
+    habits: dict[str, bool]
+    people: list[str]
+    quick_note_markdown: str
+    mood: float | None
+
+    id: int | None = None
+
+    @classmethod
+    def from_row(cls, row: Row) -> "DayMarker":
+        return cls(
+            id=row["id"],
+            day=date.fromisoformat(row["day"]),
+            habits=json.loads(row["habits_json"] or "{}"),
+            people=json.loads(row["people_json"] or "[]"),
+            quick_note_markdown=row["quick_note_markdown"] or "",
+            mood=row["mood"],
+        )
+
+    def to_db_tuple(self) -> tuple:
+        return (
+            self.day.isoformat(),
+            json.dumps(self.habits, sort_keys=True),
+            json.dumps(self.people),
+            self.quick_note_markdown,
+            self.mood,
+        )
+
+    TABLE: ClassVar[str] = "day_markers"
+
+    UPDATE_SQL: ClassVar[str] = """
+    UPDATE day_markers
+    SET
+        day = ?,
+        habits_json = ?,
+        people_json = ?,
+        quick_note_markdown = ?,
+        mood = ?
+    WHERE id = ?
+    """
+
+
+@dataclass(slots=True)
+class DayPicture:
+    day: date
+    marker: DayMarker | None
+    tracked_seconds: int
+    active_screen_seconds: int
+    sleep_seconds: int
+    top_activity: str | None
+    activity_summary: Any
+    screen_intersection: Any

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 import hashlib
 from html import escape
 
 from nicegui import ui
 
 from timeline.api.timeline import Timeline
-from timeline.domain.models import Point
-from nice_ui.pages.events import EventEditor
+from timeline.domain.models import Chunk, DayMarker, Event, Point
+from timeline.storage.repository import SQLiteRepository
+from timeline.statistics.tools import human_duration
+from nice_ui.pages.events import EventEditor, rebuild_chunks_for_repo, notify_event_change
 
 
 DAY_SECONDS = 24 * 60 * 60
@@ -112,6 +114,77 @@ def point_marker(point: Point, day: date) -> TimelinePoint:
         title=f"{point.source.value}: {label or 'Point'}\n{point.timestamp:%H:%M}",
         event_id=point.event_id,
     )
+
+
+def find_chunk_by_event_ids(repo: SQLiteRepository, event_ids: list[int]) -> Chunk | None:
+    selected = set(event_ids)
+    if not selected:
+        return None
+
+    for chunk in repo.load_chunks():
+        chunk_event_ids = {chunk.start_event_id, chunk.end_event_id}
+        if selected <= chunk_event_ids:
+            return chunk
+
+    return None
+
+
+def remove_chunk_source_events(repo: SQLiteRepository, event_ids: list[int]) -> list[str]:
+    repo._delete_chunks()
+    for event_id in sorted(set(event_ids)):
+        repo.delete(Event, event_id)
+    repo.commit()
+    return rebuild_chunks_for_repo(repo)
+
+
+def format_people_text(people: list[str]) -> str:
+    return "\n".join(people)
+
+
+def parse_people_text(value: str) -> list[str]:
+    people: list[str] = []
+    seen: set[str] = set()
+    for raw_item in value.replace(",", "\n").splitlines():
+        item = raw_item.strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        people.append(item)
+    return people
+
+
+def parse_mood_value(value) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def month_bounds(day: date) -> tuple[date, date]:
+    start = day.replace(day=1)
+    if day.month == 12:
+        end = date(day.year + 1, 1, 1)
+    else:
+        end = date(day.year, day.month + 1, 1)
+    return start, end
+
+
+def habit_values_for_day(
+    month_habits: set[str],
+    day_habits: dict[str, bool],
+) -> dict[str, bool]:
+    return {
+        habit: day_habits.get(habit, False)
+        for habit in sorted(month_habits | set(day_habits))
+    }
+
+
+def month_habit_names(repo: SQLiteRepository, day: date) -> set[str]:
+    start, end = month_bounds(day)
+    return {
+        habit
+        for marker in repo.load_day_markers(start=start, end=end - timedelta(days=1))
+        for habit in marker.habits
+    }
 
 
 def render_day_timeline_html(
@@ -363,18 +436,83 @@ def timeline_css() -> str:
 
 
 class DayTimelineView:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        on_day_change=None,
+        on_marker_saved=None,
+        note_editor_visible: bool = False,
+    ):
         self.timeline: Timeline | None = None
         self.selected_day = date.today()
+        self.on_day_change = on_day_change
+        self.on_marker_saved = on_marker_saved
+        self._syncing_day_input = False
+        self.note_editor_visible = note_editor_visible
 
         with ui.column().classes("w-full gap-4"):
             with ui.row().classes("w-full items-center justify-between"):
                 ui.label("Day Timeline").classes("text-h6")
-                self.day_input = ui.input(
-                    "Day",
-                    value=self.selected_day.isoformat(),
-                    on_change=self._day_changed,
-                ).props("type=date").classes("w-44")
+                with ui.row().classes("items-center gap-1"):
+                    with ui.button(
+                        icon="chevron_left",
+                        on_click=lambda: self._move_day(-1),
+                    ).props("flat round dense").classes("day-switch-previous"):
+                        ui.tooltip("Previous day")
+                    self.day_input = ui.input(
+                        "Day",
+                        value=self.selected_day.isoformat(),
+                        on_change=self._day_changed,
+                    ).props("type=date").classes("w-44")
+                    with ui.button(
+                        icon="chevron_right",
+                        on_click=lambda: self._move_day(1),
+                    ).props("flat round dense").classes("day-switch-next"):
+                        ui.tooltip("Next day")
+
+            with ui.row().classes("w-full gap-4 items-stretch"):
+                with ui.card().classes("flex-[3] min-w-0"):
+                    with ui.row().classes("w-full items-center justify-between"):
+                        ui.label("Day Marker").classes("text-subtitle1")
+                        ui.button(
+                            "Save",
+                            icon="save",
+                            on_click=self._save_marker,
+                        ).props("outline dense").classes("day-marker-save-action")
+                    with ui.row().classes("w-full gap-3 items-start"):
+                        with ui.column().classes("min-w-[12rem] flex-1 gap-1"):
+                            with ui.row().classes("w-full items-center justify-between"):
+                                ui.label("Habits").classes("text-subtitle2 text-grey-7")
+                                with ui.button(
+                                    icon="add",
+                                    on_click=self._toggle_habit_input,
+                                ).props("flat round dense"):
+                                    ui.tooltip("Add habit")
+                            with ui.row().classes("w-full gap-2") as self.new_habit_row:
+                                self.new_habit_input = ui.input("Habit").classes("flex-1")
+                                ui.button(
+                                    icon="check",
+                                    on_click=self._add_habit,
+                                ).props("outline round dense")
+                            with ui.column().classes("w-full gap-1") as self.habits_container:
+                                pass
+                        with ui.column().classes("w-40 gap-1"):
+                            self.mood_input = ui.number("Mood").classes("w-full")
+                            self.people_input = ui.textarea("People").classes("w-full")
+                        with ui.column().classes("min-w-[16rem] flex-[2] gap-1"):
+                            ui.label("Quick note").classes("text-subtitle2 text-grey-7")
+                            with ui.column().classes("w-full gap-2") as self.quick_note_editor_panel:
+                                self.quick_note_input = ui.codemirror(
+                                    "",
+                                    language="Markdown",
+                                    line_wrapping=True,
+                                    on_change=self._quick_note_changed,
+                                ).classes("w-full h-40 border border-slate-200 rounded")
+                            self.quick_note_preview = ui.markdown("").classes(
+                                "w-full min-h-[5rem] border border-slate-200 rounded p-2"
+                            )
+                with ui.card().classes("flex-1 min-w-[10rem]"):
+                    pass
 
             with ui.card().classes("w-full overflow-x-auto"):
                 self.container = ui.html("", sanitize=False).classes("w-full")
@@ -392,27 +530,127 @@ class DayTimelineView:
                 )
 
         self.editor = EventEditor(on_change=self._render)
-        with ui.dialog() as self.event_choice_dialog, ui.card().classes("w-96 max-w-full"):
-            ui.label("Edit Chunk Events").classes("text-h6")
-            with ui.column().classes("w-full gap-2") as self.event_choice_buttons:
+        self.habit_inputs = {}
+        self.new_habit_row.set_visibility(False)
+        self.set_note_editor_visible(self.note_editor_visible)
+        self._load_marker_form()
+        with ui.dialog() as self.chunk_detail_dialog, ui.card().classes("w-[30rem] max-w-full"):
+            ui.label("Chunk Details").classes("text-h6")
+            with ui.column().classes("w-full gap-2") as self.chunk_detail_content:
                 pass
 
     def update(self, timeline: Timeline):
         self.timeline = timeline
         if timeline.query.start is not None:
-            self.selected_day = Timeline._query_datetime(timeline.query.start).date() # type: ignore
-            self.day_input.set_value(self.selected_day.isoformat())
+            self.set_day(
+                Timeline._query_datetime(timeline.query.start).date(), # type: ignore
+                notify=False,
+            )
+            return
 
+        self._load_marker_form()
         self._render()
 
-    def _day_changed(self, event):
+    def set_day(self, day: date, *, notify: bool = True):
+        self.selected_day = day
+        self._syncing_day_input = True
         try:
-            self.selected_day = date.fromisoformat(event.value)
+            self.day_input.set_value(self.selected_day.isoformat())
+        finally:
+            self._syncing_day_input = False
+        self._load_marker_form()
+        self._render()
+        if notify and self.on_day_change is not None:
+            self.on_day_change(self.selected_day)
+
+    def _move_day(self, days: int):
+        self.set_day(self.selected_day + timedelta(days=days))
+
+    def _day_changed(self, event):
+        if self._syncing_day_input:
+            return
+
+        try:
+            selected_day = date.fromisoformat(event.value)
         except ValueError:
             ui.notify("Day must be a valid date", type="negative")
             return
 
-        self._render()
+        self.set_day(selected_day)
+
+    def _load_marker_form(self):
+        marker = self.timeline.day_marker(self.selected_day) if self.timeline is not None else None
+        day_habits = marker.habits if marker is not None else {}
+        month_habits = (
+            month_habit_names(self.timeline.repo, self.selected_day)
+            if self.timeline is not None
+            else set()
+        )
+        self._render_habits(habit_values_for_day(month_habits, day_habits))
+        self.people_input.set_value(format_people_text(marker.people) if marker is not None else "")
+        self.quick_note_input.set_value(marker.quick_note_markdown if marker is not None else "")
+        self._set_quick_note_preview(marker.quick_note_markdown if marker is not None else "")
+        self.mood_input.set_value(marker.mood if marker is not None else None)
+
+    def set_note_editor_visible(self, visible: bool):
+        self.note_editor_visible = visible
+        self.quick_note_editor_panel.set_visibility(visible)
+
+    def _quick_note_changed(self, event):
+        self._set_quick_note_preview(event.value or "")
+
+    def _set_quick_note_preview(self, value: str):
+        self.quick_note_preview.set_content(value)
+
+    def _render_habits(self, habits: dict[str, bool]):
+        self.habits_container.clear()
+        self.habit_inputs = {}
+        with self.habits_container:
+            for name in sorted(habits):
+                self.habit_inputs[name] = ui.checkbox(name, value=habits[name])
+
+    def _toggle_habit_input(self):
+        self.new_habit_row.set_visibility(not self.new_habit_row.visible)
+
+    def _add_habit(self):
+        name = (self.new_habit_input.value or "").strip()
+        if not name:
+            self.new_habit_row.set_visibility(False)
+            return
+
+        habits = self._current_habits()
+        habits.setdefault(name, False)
+        self.new_habit_input.set_value("")
+        self.new_habit_row.set_visibility(False)
+        self._render_habits(habits)
+
+    def _current_habits(self) -> dict[str, bool]:
+        return {
+            name: bool(checkbox.value)
+            for name, checkbox in self.habit_inputs.items()
+        }
+
+    def _save_marker(self):
+        if self.timeline is None:
+            return
+
+        try:
+            marker = DayMarker(
+                day=self.selected_day,
+                habits=self._current_habits(),
+                people=parse_people_text(self.people_input.value or ""),
+                quick_note_markdown=self.quick_note_input.value or "",
+                mood=parse_mood_value(self.mood_input.value),
+            )
+        except ValueError:
+            ui.notify("Mood must be numeric", type="negative")
+            return
+
+        self.timeline.save_day_marker(marker)
+        self.timeline.repo.commit()
+        if self.on_marker_saved is not None:
+            self.on_marker_saved(self.selected_day)
+        ui.notify("Day marker saved", type="positive")
 
     def _render(self):
         if self.timeline is None:
@@ -445,28 +683,72 @@ class DayTimelineView:
             self.editor.open(self.timeline, event_ids[0])
             return
 
-        self._open_event_choice(event_ids)
+        self._open_chunk_details(event_ids)
 
-    def _open_event_choice(self, event_ids: list[int]):
+    def _open_chunk_details(self, event_ids: list[int]):
         if self.timeline is None:
             return
 
-        self.event_choice_buttons.clear()
+        self.chunk_detail_content.clear()
+        chunk = find_chunk_by_event_ids(self.timeline.repo, event_ids)
         labels = ["Start event", "End event"]
 
-        with self.event_choice_buttons:
+        with self.chunk_detail_content:
+            if chunk is None:
+                ui.label("Chunk was not found for these events.").classes("text-body2 text-grey-7")
+            else:
+                self._chunk_details(chunk)
+                ui.separator()
+
+            ui.label("Source Events").classes("text-subtitle2 text-grey-7")
             for label, event_id in zip(labels, event_ids, strict=False):
                 ui.button(
                     label,
                     icon="edit",
                     on_click=lambda selected_id=event_id: self._open_chosen_event(selected_id), #type: ignore
                 ).props("outline").classes("w-full")
+            ui.separator()
+            with ui.row().classes("w-full justify-between"):
+                ui.button(
+                    "Close",
+                    on_click=self.chunk_detail_dialog.close,
+                ).props("flat")
+                ui.button(
+                    "Remove chunk",
+                    icon="delete",
+                    on_click=lambda ids=event_ids: self._remove_chunk(ids), #type: ignore
+                ).props("color=negative")
 
-        self.event_choice_dialog.open()
+        self.chunk_detail_dialog.open()
+
+    @staticmethod
+    def _detail_row(label: str, value: str):
+        with ui.row().classes("w-full justify-between gap-3"):
+            ui.label(label).classes("text-caption text-grey-7")
+            ui.label(value).classes("text-body2 text-right")
+
+    def _chunk_details(self, chunk: Chunk):
+        self._detail_row("Activity", chunk.name or "Untitled")
+        self._detail_row("Category", chunk.category or "")
+        self._detail_row("Source", chunk.source.value)
+        self._detail_row("Start", chunk.start_timestamp.strftime("%Y-%m-%d %H:%M:%S"))
+        self._detail_row("End", chunk.end_timestamp.strftime("%Y-%m-%d %H:%M:%S"))
+        self._detail_row("Duration", human_duration(chunk.duration_seconds))
+        self._detail_row("Chunk ID", str(chunk.id or ""))
+        self._detail_row("Event IDs", f"{chunk.start_event_id}, {chunk.end_event_id}")
+
+    def _remove_chunk(self, event_ids: list[int]):
+        if self.timeline is None:
+            return
+
+        warnings = remove_chunk_source_events(self.timeline.repo, event_ids)
+        self.chunk_detail_dialog.close()
+        self._render()
+        notify_event_change("Chunk source events deleted", warnings)
 
     def _open_chosen_event(self, event_id: int):
         if self.timeline is None:
             return
 
-        self.event_choice_dialog.close()
+        self.chunk_detail_dialog.close()
         self.editor.open(self.timeline, event_id)

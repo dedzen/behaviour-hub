@@ -45,7 +45,7 @@ class FilterPanel:
         self.on_apply = on_apply
         self.state = FilterState(
             activities=set(),
-            sources=set(),
+            sources={DeviceSource.EMBED.value},
         )
 
         self._build()
@@ -77,21 +77,19 @@ class FilterPanel:
 
         return t
     def _build(self):
-        ui.label("Filters").classes("text-h5")
+        with ui.row().classes("w-full items-center justify-between gap-2"):
+            ui.label("Filters").classes("text-h5")
+            self.phone_source = ui.checkbox(
+                "Phone",
+                value=False,
+                on_change=lambda e: self._phone_source_changed(bool(e.value)),
+            ).props("dense")
 
         self.preset = ui.select(
             PRESETS,
             value=self.state.preset,
             label="Time",
             on_change=self._preset_changed,
-        ).classes("w-full")
-        ui.label("Devices")
-
-        self.devices = ui.select(
-            self.base.metadata.devices,
-            multiple=True,
-            on_change=lambda e:
-                self.state.sources.update(e.value or []), #type: ignore
         ).classes("w-full")
 
         ui.label("Activities")
@@ -137,8 +135,8 @@ class FilterPanel:
         self.range = ui.range(
             min=0,
             max=12 * 3600,
-            value=self.DEFAULT_DURATION,
-            on_change=self._duration_changed,
+            value=self.DEFAULT_DURATION, #type: ignore
+            on_change=self._duration_changed, 
         ).classes("w-full")
 
         with ui.row().classes("w-full"):
@@ -153,14 +151,14 @@ class FilterPanel:
 
     def reset(self):
         self.preset.set_value("All time")
-        self.devices.set_value([])
+        self.phone_source.set_value(False)
         self.activities.untick()
-        self.range.set_value(self.DEFAULT_DURATION)
+        self.range.set_value(self.DEFAULT_DURATION) #type:ignore 
         self.duration_label.set_text("")
 
         self.state = FilterState(
             activities=set(),
-            sources=set(),
+            sources={DeviceSource.EMBED.value},
         )
 
         if self.on_apply is not None:
@@ -168,6 +166,11 @@ class FilterPanel:
 
     def _preset_changed(self, e):
         self.state.preset = e.value
+    def _phone_source_changed(self, include_phone: bool):
+        sources = {DeviceSource.EMBED.value}
+        if include_phone:
+            sources.add(DeviceSource.PHONE.value)
+        self.state.sources = sources
     def _duration_changed(self, e):
         minimum = e.value["min"]
         maximum = e.value["max"]

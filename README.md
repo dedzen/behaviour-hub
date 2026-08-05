@@ -116,7 +116,9 @@ uv run behaviour-hub import embed path/to/log.csv --database timeline.db
 Import an Android unlock/screen JSONL log:
 
 ```bash
-uv run behaviour-hub import android data/android/unlock-events.jsonl --database timeline.db --strategy keyguard
+uv run behaviour-hub import android-download 192.168.3.55:8080 --output data/android/unlock-events.jsonl
+uv run behaviour-hub import android data/android/unlock-events.jsonl --database timeline.db --strategy active_screen
+uv run behaviour-hub import android-clear 192.168.3.55:8080
 ```
 
 Embed CSV rows are expected to include:
@@ -143,12 +145,15 @@ List, edit, or delete raw events:
 uv run behaviour-hub events list --db timeline.db --day 2026-08-01
 uv run behaviour-hub events edit 123 --db timeline.db
 uv run behaviour-hub events delete 123 --db timeline.db
+uv run behaviour-hub export markdown 2026-08-01 --database timeline.db --output daily.md
 ```
 
 The NiceGUI Import/Export page can also download an Embed log from
 `http://<ip>/log.csv`, clear the remote log with `DELETE`, import the downloaded
 file from `data/embed/incoming.csv`, import Android logs from
-`data/android/unlock-events.jsonl`, and rebuild chunks.
+`data/android/unlock-events.jsonl` using the active-screen strategy, and rebuild chunks.
+The CLI can download and clear Android logs through
+`http://<ip-or-host:port>/unlock-events.jsonl`.
 
 ## Python API
 
