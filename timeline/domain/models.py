@@ -17,6 +17,7 @@ class Event:
     name: str | None
 
     id: int | None = None
+    revision: int = 0
 
     @classmethod
     def from_row(cls, row: Row) -> "Event":
@@ -27,6 +28,7 @@ class Event:
             event_kind=EventKind(row["event_kind"]),
             category=row["category"],
             name=row["name"],
+            revision=row["revision"] if "revision" in row.keys() else 1,
         )
 
     def to_db_tuple(self) -> tuple:
@@ -51,7 +53,8 @@ class Event:
         device_source = ?,
         event_kind = ?,
         category = ?,
-        name = ?
+        name = ?,
+        revision = revision + 1
     WHERE id = ?
     """
 
@@ -256,6 +259,7 @@ class DayMarker:
     mood: float | None
 
     id: int | None = None
+    revision: int = 0
 
     @classmethod
     def from_row(cls, row: Row) -> "DayMarker":
@@ -266,6 +270,7 @@ class DayMarker:
             people=json.loads(row["people_json"] or "[]"),
             quick_note_markdown=row["quick_note_markdown"] or "",
             mood=row["mood"],
+            revision=row["revision"] if "revision" in row.keys() else 1,
         )
 
     def to_db_tuple(self) -> tuple:
@@ -286,7 +291,8 @@ class DayMarker:
         habits_json = ?,
         people_json = ?,
         quick_note_markdown = ?,
-        mood = ?
+        mood = ?,
+        revision = revision + 1
     WHERE id = ?
     """
 

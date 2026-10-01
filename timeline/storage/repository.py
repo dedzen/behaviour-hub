@@ -1,17 +1,22 @@
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from timeline.domain.models import Event, Chunk, Point, Annotation, Context, DayMarker
 from datetime import date, datetime
 from typing import TypeVar
 from timeline.api.query import Query
+from timeline.storage.errors import ConcurrentModificationError
 
 T = TypeVar('T')
 
 
 class SQLiteRepository:
     def __init__(self, database: Path):
-        self.conn = sqlite3.connect(database)
+        self.conn = sqlite3.connect(database, timeout=10.0)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA busy_timeout = 10000")
+        self.conn.execute("PRAGMA journal_mode = WAL")
 
     def close(self):
         self.conn.close()
@@ -19,11 +24,26 @@ class SQLiteRepository:
     def commit(self):
         self.conn.commit()
 
+    def rollback(self):
+        self.conn.rollback()
+
+    @contextmanager
+    def transaction(self, *, immediate: bool = False):
+        self.conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+        try:
+            yield self
+        except Exception:
+            self.rollback()
+            raise
+        else:
+            self.commit()
+
 
     def insert_event(self, event: Event):
         existing = self.find_duplicate_event(event)
         if existing is not None:
             event.id = existing.id
+            event.revision = existing.revision
             return False
 
         cursor = self.conn.execute(
@@ -41,6 +61,7 @@ class SQLiteRepository:
         )
 
         event.id = cursor.lastrowid
+        event.revision = 1
         return True
 
     def load_events(self, query: Query | None = None) -> list[Event]:
@@ -142,7 +163,15 @@ class SQLiteRepository:
 
         return None if row is None else DayMarker.from_row(row)
 
-    def upsert_day_marker(self, marker: DayMarker) -> DayMarker:
+    def upsert_day_marker(
+        self,
+        marker: DayMarker,
+        *,
+        expected_revision: int | None = None,
+    ) -> DayMarker:
+        if expected_revision is not None:
+            return self._upsert_day_marker_if_current(marker, expected_revision)
+
         cursor = self.conn.execute(
             """
             INSERT INTO day_markers (
@@ -157,12 +186,62 @@ class SQLiteRepository:
                 habits_json = excluded.habits_json,
                 people_json = excluded.people_json,
                 quick_note_markdown = excluded.quick_note_markdown,
-                mood = excluded.mood
-            RETURNING id
+                mood = excluded.mood,
+                revision = day_markers.revision + 1
+            RETURNING id, revision
             """,
             marker.to_db_tuple(),
         )
-        marker.id = cursor.fetchone()["id"]
+        row = cursor.fetchone()
+        marker.id = row["id"]
+        marker.revision = row["revision"]
+        return marker
+
+    def _upsert_day_marker_if_current(
+        self,
+        marker: DayMarker,
+        expected_revision: int,
+    ) -> DayMarker:
+        if expected_revision == 0:
+            try:
+                cursor = self.conn.execute(
+                    """
+                    INSERT INTO day_markers (
+                        day, habits_json, people_json, quick_note_markdown, mood
+                    ) VALUES (?, ?, ?, ?, ?)
+                    RETURNING id, revision
+                    """,
+                    marker.to_db_tuple(),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ConcurrentModificationError("day marker", marker.day) from exc
+        else:
+            cursor = self.conn.execute(
+                """
+                UPDATE day_markers
+                SET habits_json = ?,
+                    people_json = ?,
+                    quick_note_markdown = ?,
+                    mood = ?,
+                    revision = revision + 1
+                WHERE day = ? AND revision = ?
+                RETURNING id, revision
+                """,
+                (
+                    marker.to_db_tuple()[1],
+                    marker.to_db_tuple()[2],
+                    marker.quick_note_markdown,
+                    marker.mood,
+                    marker.day.isoformat(),
+                    expected_revision,
+                ),
+            )
+
+        row = cursor.fetchone()
+        if row is None:
+            raise ConcurrentModificationError("day marker", marker.day)
+        marker.id = row["id"]
+        marker.revision = row["revision"]
         return marker
 
     def load_day_markers(
@@ -276,18 +355,38 @@ class SQLiteRepository:
                     query=query,
             )
 
-    def update(self, obj) -> None:
+    def update(self, obj, *, expected_revision: int | None = None) -> None:
         if isinstance(obj, Event):
+            if expected_revision is not None:
+                self._assert_revision(Event, obj.id, expected_revision)
             duplicate = self.find_duplicate_event(obj, exclude_id=obj.id)
             if duplicate is not None:
                 self._merge_events(duplicate.id, obj.id) # type: ignore[arg-type]
                 obj.id = duplicate.id
+                obj.revision = duplicate.revision
+                return
+
+            if expected_revision is not None:
+                cursor = self.conn.execute(
+                    """
+                    UPDATE events
+                    SET timestamp = ?, device_source = ?, event_kind = ?,
+                        category = ?, name = ?, revision = revision + 1
+                    WHERE id = ? AND revision = ?
+                    """,
+                    obj.to_db_tuple() + (obj.id, expected_revision),
+                )
+                if cursor.rowcount != 1:
+                    raise ConcurrentModificationError("event", obj.id)
+                obj.revision = expected_revision + 1
                 return
 
         self.conn.execute(
             obj.UPDATE_SQL,
             obj.to_db_tuple() + (obj.id,),
         )
+        if isinstance(obj, (Event, DayMarker)):
+            obj.revision += 1
 
     def get(self, model, id: int):
         row = self.conn.execute(
@@ -297,11 +396,28 @@ class SQLiteRepository:
 
         return None if row is None else model.from_row(row)
 
-    def delete(self, model, id: int):
-        self.conn.execute(
-            f"DELETE FROM {model.TABLE} WHERE id = ?",
-            (id,),
+    def delete(self, model, id: int, *, expected_revision: int | None = None):
+        if expected_revision is None:
+            self.conn.execute(
+                f"DELETE FROM {model.TABLE} WHERE id = ?",
+                (id,),
+            )
+            return
+
+        cursor = self.conn.execute(
+            f"DELETE FROM {model.TABLE} WHERE id = ? AND revision = ?",
+            (id, expected_revision),
         )
+        if cursor.rowcount != 1:
+            raise ConcurrentModificationError(model.__name__.lower(), id)
+
+    def _assert_revision(self, model, id: int | None, expected_revision: int) -> None:
+        row = self.conn.execute(
+            f"SELECT revision FROM {model.TABLE} WHERE id = ?",
+            (id,),
+        ).fetchone()
+        if row is None or row["revision"] != expected_revision:
+            raise ConcurrentModificationError(model.__name__.lower(), id)
 
     def find_duplicate_event(
         self,
@@ -494,6 +610,23 @@ class SQLiteRepository:
 
         with schema_path.open("r", encoding="utf-8") as f:
             self.conn.executescript(f.read())
+        self._ensure_column("events", "revision", "INTEGER NOT NULL DEFAULT 1")
+        self._ensure_column("day_markers", "revision", "INTEGER NOT NULL DEFAULT 1")
+        user_version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if user_version < 1:
+            self.conn.execute("PRAGMA user_version = 1")
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        columns = {
+            row["name"]
+            for row in self.conn.execute(f"PRAGMA table_info({table})")
+        }
+        if column not in columns:
+            try:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
     @staticmethod
     def _day_value(value: date | str) -> date:
@@ -509,4 +642,6 @@ class SQLiteRepository:
     def __exit__(self, exc_type, exc, tb):
         if exc is None:
             self.commit()
+        else:
+            self.rollback()
         self.close()

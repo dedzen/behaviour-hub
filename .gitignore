@@ -3,6 +3,8 @@
 **/__pycache__/
 data/
 timeline.db
+timeline.db-shm
+timeline.db-wal
 .ipynb_checkpoints
 .vscode/
 backups/

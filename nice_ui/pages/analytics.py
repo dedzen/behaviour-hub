@@ -53,9 +53,17 @@ class AnalyticsView:
 
     def update(self, timeline: Timeline):
         analytics = timeline.analytics.chunks
+        share = analytics.share(by=["category", "name"])
+        if share.is_empty():
+            empty = pl.DataFrame()
+            self.share.update(empty)
+            self.day_category.update(empty)
+            self.rolling.update(empty)
+            self.transitions.update(empty)
+            return
 
         self.share.update(
-            analytics.share(by=["category", "name"])
+            share
             .select(
                 "name",
                 "category",

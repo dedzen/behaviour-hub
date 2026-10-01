@@ -69,9 +69,12 @@ class PlotsView:
             self.update(self.timeline)
 
     def _share_options(self, timeline: Timeline) -> dict:
+        share = timeline.analytics.chunks.share(by=["category", "name"]).head(12)
+        if share.is_empty():
+            return self._empty_options("No activity time")
+
         df = (
-            timeline.analytics.chunks.share(by=["category", "name"])
-            .head(12)
+            share
             .with_columns(
                 activity=pl.concat_str(
                     [
@@ -83,9 +86,6 @@ class PlotsView:
                 hours=pl.col("total_seconds") / 3600,
             )
         )
-
-        if df.is_empty():
-            return self._empty_options("No activity time")
 
         return {
             "tooltip": {
@@ -118,17 +118,18 @@ class PlotsView:
 
     def _total_options(self, timeline: Timeline) -> dict:
         period = PERIODS[self.period]
+        totals = timeline.analytics.chunks.over_time(period, by=None) # type: ignore
+        if totals.is_empty():
+            return self._empty_options("No tracked time")
+
         df = (
-            timeline.analytics.chunks.over_time(period, by=None) #type: ignore
+            totals
             .with_columns(
                 period_label=self._period_label(period),
                 hours=pl.col("total_seconds") / 3600,
             )
             .sort("period")
         )
-
-        if df.is_empty():
-            return self._empty_options("No tracked time")
 
         return {
             "tooltip": {

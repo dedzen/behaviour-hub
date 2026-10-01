@@ -94,21 +94,7 @@ class FilterPanel:
 
         ui.label("Activities")
 
-        tree = []
-
-        for category, activities in self.base.metadata.activity_tree.items():
-
-            tree.append({
-                "id": category,
-                "label": category,
-                "children": [
-                    {
-                        "id": activity,
-                        "label": activity,
-                    }
-                    for activity in activities
-                ],
-            })
+        tree = self._activity_tree_nodes()
         self.activities = ui.tree(
             tree,
             tick_strategy="leaf",
@@ -120,34 +106,52 @@ class FilterPanel:
                 ),
         )
         self.duration_label = ui.label()
-        # ui.range(
-        #     min=0,
-        #     max=8 * 3600,
-        #     value={
-        #         "min": 0,
-        #         "max": 8 * 3600,
-        #     },
-        #     on_change=lambda e: (
-        #         setattr(self.state, "min_duration", e.value["min"]), #type:ignore
-        #         setattr(self.state, "max_duration", e.value["max"]), #type:ignore
-        #     ),
-        # )
         self.range = ui.range(
             min=0,
             max=12 * 3600,
-            value=self.DEFAULT_DURATION, #type: ignore
-            on_change=self._duration_changed, 
+            value=self.DEFAULT_DURATION, # type: ignore
+            on_change=self._duration_changed,
         ).classes("w-full")
 
         with ui.row().classes("w-full"):
             ui.button(
                 "Apply",
-                on_click=lambda : self.on_apply(), #type: ignore
+                on_click=lambda: self.on_apply(), # type: ignore
             )
             ui.button(
                 "Reset",
                 on_click=self.reset,
             )
+
+    def _activity_tree_nodes(self) -> list[dict]:
+        return [
+            {
+                "id": category,
+                "label": category,
+                "children": [
+                    {
+                        "id": activity,
+                        "label": activity,
+                    }
+                    for activity in activities
+                ],
+            }
+            for category, activities in self.base.metadata.activity_tree.items()
+        ]
+
+    def refresh_options(self) -> None:
+        selected = set(self.state.activities or ())
+        nodes = self._activity_tree_nodes()
+        available = {
+            child["id"]
+            for node in nodes
+            for child in node.get("children", [])
+        }
+        selected &= available
+        self.state.activities = selected
+        self.activities.props["nodes"] = nodes
+        self.activities.props["ticked"] = list(selected)
+        self.activities.update()
 
     def reset(self):
         self.preset.set_value("All time")

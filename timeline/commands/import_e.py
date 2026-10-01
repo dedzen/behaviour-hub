@@ -4,9 +4,7 @@ import urllib.request
 
 import typer
 
-from timeline.ingest.android import import_android_unlock_jsonl
-from timeline.ingest.embed import import_embed_csv
-from timeline.storage.repository import SQLiteRepository
+from timeline.application.mutations import TimelineMutationService
 
 app = typer.Typer(help="Import data into the database")
 
@@ -20,19 +18,8 @@ def import_embed(
 ):
     """Import an embed CSV log."""
 
-    with SQLiteRepository(database) as repo:
-        repo.ensure_schema()
-
-        events = import_embed_csv(csv)
-        inserted = 0
-
-        for event in events:
-            inserted += int(repo.insert_event(event))
-
-    skipped = len(events) - inserted
-    typer.echo(f"Imported {inserted} events.")
-    if skipped:
-        typer.echo(f"Skipped {skipped} duplicates.")
+    result = TimelineMutationService(database).import_embed(csv)
+    typer.echo(result.message + ".")
 
 
 @app.command("android")
@@ -50,29 +37,8 @@ def import_android(
     if strategy not in {"active_screen", "screen", "keyguard"}:
         raise typer.BadParameter("strategy must be 'active_screen', 'screen', or 'keyguard'")
 
-    with SQLiteRepository(database) as repo:
-        repo.ensure_schema()
-
-        result = import_android_unlock_jsonl(jsonl, strategy=strategy) # type: ignore[arg-type]
-        inserted = 0
-
-        for event in result.events:
-            inserted += int(repo.insert_event(event))
-
-    skipped = len(result.events) - inserted
-    typer.echo(f"Imported {inserted} android events using {result.strategy} strategy.")
-    if result.ignored_events:
-        typer.echo(f"Ignored {result.ignored_events} unrelated events.")
-    if result.dropped_orphan_starts:
-        typer.echo(f"Dropped {result.dropped_orphan_starts} orphan starts.")
-    if result.dropped_short_chunks:
-        typer.echo(f"Dropped {result.dropped_short_chunks} chunks shorter than 20 seconds.")
-    if result.anomalies:
-        typer.echo(f"Reported {len(result.anomalies)} transition anomalies.")
-    if result.unknown_time_seconds:
-        typer.echo(f"Reported {result.unknown_time_seconds:.3f} seconds of unknown state.")
-    if skipped:
-        typer.echo(f"Skipped {skipped} duplicates.")
+    result = TimelineMutationService(database).import_android(jsonl, strategy)
+    typer.echo(result.message + ".")
 
 
 @app.command("android-download")

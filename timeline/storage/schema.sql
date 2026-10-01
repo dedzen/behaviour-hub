@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS events (
     event_kind TEXT NOT NULL,
 
     category TEXT,
-    name TEXT
+    name TEXT,
+
+    revision INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
@@ -79,5 +81,7 @@ CREATE TABLE IF NOT EXISTS day_markers (
     habits_json TEXT NOT NULL DEFAULT '{}',
     people_json TEXT NOT NULL DEFAULT '[]',
     quick_note_markdown TEXT NOT NULL DEFAULT '',
-    mood REAL
+    mood REAL,
+
+    revision INTEGER NOT NULL DEFAULT 1
 );

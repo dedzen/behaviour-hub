@@ -86,17 +86,25 @@ NICEGUI_PORT=8081 uv run python -m nice_ui.app
 The application expects `timeline.db` in the project root unless a CLI command
 is given a different database path.
 
+The dashboard supports multiple simultaneous browser connections in one app
+process. Each connection keeps independent filters, navigation, and editor
+state while sharing the same SQLite database. Committed dashboard changes are
+propagated to the other open connections; stale editors must reload before
+saving. Running multiple NiceGUI worker processes against the database is not a
+supported deployment mode.
+
 ## Data Model
 
 Behaviour Hub uses SQLite tables defined in `timeline/storage/schema.sql`.
 
 - `events`: raw imported or edited observations. Each event has a timestamp,
-  device source, kind, category, and name.
+  device source, kind, category, name, and revision used to reject stale edits.
 - `chunks`: generated closed intervals with start/end timestamps, duration,
   source, category/name, and links to the start/end events that produced them.
 - `points`: point-in-time observations that do not create chunks.
 - `annotations`: free text attached to a chunk or point.
 - `context`: timestamped key/value metadata from a source.
+- `day_markers`: per-day habits, people, notes, mood, and an edit revision.
 
 Current device sources are `embed`, `pc`, and `phone`. Current event kinds are
 `interval_start`, `interval_end`, and `point`.

@@ -161,7 +161,7 @@ def format_calendar_duration(seconds: int) -> str:
 
 
 class CalendarPage:
-    def __init__(self, timeline: Timeline):
+    def __init__(self, timeline: Timeline, *, mutation_api=None):
         self.timeline = timeline
         self.today = date.today()
         self.selected_day = self.today
@@ -218,6 +218,7 @@ class CalendarPage:
                         on_day_change=self._detail_day_changed,
                         on_marker_saved=self._marker_saved,
                         note_editor_visible=self.calendar_folded,
+                        mutation_api=mutation_api,
                     )
 
         self.detail.update(self.timeline)
@@ -266,6 +267,29 @@ class CalendarPage:
     def _marker_saved(self, selected_day: date):
         self._metrics_by_day[selected_day] = calendar_day_metrics(self.timeline, selected_day)
         self._render_month_grid()
+
+    def database_changed(
+        self,
+        *,
+        events_changed: bool,
+        marker_days: frozenset[date],
+    ) -> None:
+        if events_changed:
+            self._refresh_month_metrics()
+        else:
+            for changed_day in marker_days:
+                if changed_day in self._metrics_by_day:
+                    self._metrics_by_day[changed_day] = calendar_day_metrics(
+                        self.timeline,
+                        changed_day,
+                    )
+        if events_changed or marker_days:
+            self._render_month_grid()
+        if self.detail is not None:
+            self.detail.database_changed(
+                events_changed=events_changed,
+                marker_days=marker_days,
+            )
 
     def _refresh_month_metrics(self):
         self._metrics_month = self.visible_month

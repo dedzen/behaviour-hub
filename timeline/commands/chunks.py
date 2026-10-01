@@ -2,8 +2,7 @@ from pathlib import Path
 
 import typer
 
-from timeline.domain.interval_builder import IntervalBuilder
-from timeline.storage.repository import SQLiteRepository
+from timeline.application.mutations import TimelineMutationService
 
 app = typer.Typer(help="Chunk operations")
 
@@ -14,12 +13,7 @@ def rebuild_chunks(
 ):
     """Rebuild all chunks from events."""
 
-    with SQLiteRepository(database) as repo:
-        events = repo.load_events()
-        chunks, warnings = IntervalBuilder.build(events)
-        repo.replace_chunks(chunks)
-        
-        for warning in warnings:
-            typer.echo(f"WARNING: {warning}", err=True)
-
-    typer.echo(f"Generated {len(chunks)} chunks.")
+    result = TimelineMutationService(database).rebuild_chunks()
+    for warning in result.warnings:
+        typer.echo(f"WARNING: {warning}", err=True)
+    typer.echo(result.message + ".")

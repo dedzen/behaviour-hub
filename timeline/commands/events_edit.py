@@ -5,6 +5,8 @@ from timeline.domain.enums import DeviceSource
 from pathlib import Path
 from timeline.domain.models import Event
 from datetime import datetime
+from timeline.application.mutations import TimelineMutationService
+from timeline.storage.errors import ConcurrentModificationError
 
 app = typer.Typer(help="Manage raw events.")
 @app.command("list")
@@ -75,6 +77,7 @@ def delete_event(
     db: str = typer.Option("timeline.db"),
 ):
     repo = SQLiteRepository(Path(db))
+    repo.ensure_schema()
 
     event = repo.get(Event, id)
 
@@ -87,9 +90,13 @@ def delete_event(
     if not typer.confirm("Delete event?"):
         raise typer.Exit()
 
-    repo.delete(Event, id)
-    repo.commit()
     repo.close()
+
+    try:
+        TimelineMutationService(Path(db)).delete_event(id, event.revision)
+    except ConcurrentModificationError:
+        typer.echo("Event changed while it was being edited; retry the command.")
+        raise typer.Exit(1) from None
 
     typer.echo("Deleted.")
 
@@ -100,6 +107,7 @@ def edit_event(
 ):
 
     repo = SQLiteRepository(Path(db))
+    repo.ensure_schema()
 
     event = repo.get(Event, id)
 
@@ -122,8 +130,12 @@ def edit_event(
         default=event.name,
     )
 
-    repo.update(event)
-    repo.commit()
     repo.close()
+
+    try:
+        TimelineMutationService(Path(db)).update_event(event, event.revision)
+    except ConcurrentModificationError:
+        typer.echo("Event changed while it was being edited; retry the command.")
+        raise typer.Exit(1) from None
 
     typer.echo("Updated.")

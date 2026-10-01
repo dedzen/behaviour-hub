@@ -10,6 +10,7 @@ from nicegui import ui
 from timeline.api.timeline import Timeline
 from timeline.domain.models import Chunk, DayMarker, Event, Point
 from timeline.storage.repository import SQLiteRepository
+from timeline.storage.errors import ConcurrentModificationError
 from timeline.statistics.tools import human_duration
 from nice_ui.pages.events import EventEditor, rebuild_chunks_for_repo, notify_event_change
 
@@ -442,6 +443,7 @@ class DayTimelineView:
         on_day_change=None,
         on_marker_saved=None,
         note_editor_visible: bool = False,
+        mutation_api=None,
     ):
         self.timeline: Timeline | None = None
         self.selected_day = date.today()
@@ -449,6 +451,13 @@ class DayTimelineView:
         self.on_marker_saved = on_marker_saved
         self._syncing_day_input = False
         self.note_editor_visible = note_editor_visible
+        self.mutation_api = mutation_api
+        self.marker_revision = 0
+        self.marker_dirty = False
+        self.marker_stale = False
+        self._loading_marker = False
+        self._saving_marker: DayMarker | None = None
+        self._chunk_event_revisions: dict[int, int] = {}
 
         with ui.column().classes("w-full gap-4"):
             with ui.row().classes("w-full items-center justify-between"):
@@ -474,11 +483,17 @@ class DayTimelineView:
                 with ui.card().classes("flex-[3] min-w-0"):
                     with ui.row().classes("w-full items-center justify-between"):
                         ui.label("Day Marker").classes("text-subtitle1")
-                        ui.button(
+                        self.marker_save_button = ui.button(
                             "Save",
                             icon="save",
                             on_click=self._save_marker,
                         ).props("outline dense").classes("day-marker-save-action")
+                    with ui.row().classes("w-full items-center gap-2") as self.marker_stale_row:
+                        ui.icon("warning", color="warning")
+                        ui.label(
+                            "This marker changed elsewhere. Reload before saving."
+                        ).classes("text-warning text-caption flex-1")
+                        ui.button("Reload", on_click=self._reload_marker).props("flat dense")
                     with ui.row().classes("w-full gap-3 items-start"):
                         with ui.column().classes("min-w-[12rem] flex-1 gap-1"):
                             with ui.row().classes("w-full items-center justify-between"):
@@ -497,8 +512,12 @@ class DayTimelineView:
                             with ui.column().classes("w-full gap-1") as self.habits_container:
                                 pass
                         with ui.column().classes("w-40 gap-1"):
-                            self.mood_input = ui.number("Mood").classes("w-full")
-                            self.people_input = ui.textarea("People").classes("w-full")
+                            self.mood_input = ui.number(
+                                "Mood", on_change=self._mark_marker_dirty
+                            ).classes("w-full")
+                            self.people_input = ui.textarea(
+                                "People", on_change=self._mark_marker_dirty
+                            ).classes("w-full")
                         with ui.column().classes("min-w-[16rem] flex-[2] gap-1"):
                             ui.label("Quick note").classes("text-subtitle2 text-grey-7")
                             with ui.column().classes("w-full gap-2") as self.quick_note_editor_panel:
@@ -529,9 +548,10 @@ class DayTimelineView:
                     """,
                 )
 
-        self.editor = EventEditor(on_change=self._render)
+        self.editor = EventEditor(on_change=self._render, mutation_api=mutation_api)
         self.habit_inputs = {}
         self.new_habit_row.set_visibility(False)
+        self.marker_stale_row.set_visibility(False)
         self.set_note_editor_visible(self.note_editor_visible)
         self._load_marker_form()
         with ui.dialog() as self.chunk_detail_dialog, ui.card().classes("w-[30rem] max-w-full"):
@@ -586,17 +606,25 @@ class DayTimelineView:
             if self.timeline is not None
             else set()
         )
-        self._render_habits(habit_values_for_day(month_habits, day_habits))
-        self.people_input.set_value(format_people_text(marker.people) if marker is not None else "")
-        self.quick_note_input.set_value(marker.quick_note_markdown if marker is not None else "")
-        self._set_quick_note_preview(marker.quick_note_markdown if marker is not None else "")
-        self.mood_input.set_value(marker.mood if marker is not None else None)
+        self._loading_marker = True
+        try:
+            self._render_habits(habit_values_for_day(month_habits, day_habits))
+            self.people_input.set_value(format_people_text(marker.people) if marker is not None else "")
+            self.quick_note_input.set_value(marker.quick_note_markdown if marker is not None else "")
+            self._set_quick_note_preview(marker.quick_note_markdown if marker is not None else "")
+            self.mood_input.set_value(marker.mood if marker is not None else None)
+        finally:
+            self._loading_marker = False
+        self.marker_revision = marker.revision if marker is not None else 0
+        self.marker_dirty = False
+        self._set_marker_stale(False)
 
     def set_note_editor_visible(self, visible: bool):
         self.note_editor_visible = visible
         self.quick_note_editor_panel.set_visibility(visible)
 
     def _quick_note_changed(self, event):
+        self._mark_marker_dirty()
         self._set_quick_note_preview(event.value or "")
 
     def _set_quick_note_preview(self, value: str):
@@ -607,7 +635,11 @@ class DayTimelineView:
         self.habit_inputs = {}
         with self.habits_container:
             for name in sorted(habits):
-                self.habit_inputs[name] = ui.checkbox(name, value=habits[name])
+                self.habit_inputs[name] = ui.checkbox(
+                    name,
+                    value=habits[name],
+                    on_change=self._mark_marker_dirty,
+                )
 
     def _toggle_habit_input(self):
         self.new_habit_row.set_visibility(not self.new_habit_row.visible)
@@ -623,6 +655,7 @@ class DayTimelineView:
         self.new_habit_input.set_value("")
         self.new_habit_row.set_visibility(False)
         self._render_habits(habits)
+        self._mark_marker_dirty()
 
     def _current_habits(self) -> dict[str, bool]:
         return {
@@ -630,8 +663,26 @@ class DayTimelineView:
             for name, checkbox in self.habit_inputs.items()
         }
 
-    def _save_marker(self):
+    def _mark_marker_dirty(self, _=None):
+        if not self._loading_marker:
+            self.marker_dirty = True
+
+    def _set_marker_stale(self, stale: bool):
+        self.marker_stale = stale
+        self.marker_stale_row.set_visibility(stale)
+        if stale:
+            self.marker_save_button.props("disable")
+        else:
+            self.marker_save_button.props(remove="disable")
+
+    def _reload_marker(self):
+        self._load_marker_form()
+
+    async def _save_marker(self):
         if self.timeline is None:
+            return
+
+        if self.marker_stale:
             return
 
         try:
@@ -641,16 +692,50 @@ class DayTimelineView:
                 people=parse_people_text(self.people_input.value or ""),
                 quick_note_markdown=self.quick_note_input.value or "",
                 mood=parse_mood_value(self.mood_input.value),
+                revision=self.marker_revision,
             )
         except ValueError:
             ui.notify("Mood must be numeric", type="negative")
             return
 
-        self.timeline.save_day_marker(marker)
-        self.timeline.repo.commit()
+        try:
+            if self.mutation_api is None:
+                self.timeline.save_day_marker(marker)
+                self.timeline.repo.commit()
+            else:
+                self._saving_marker = marker
+                await self.mutation_api.save_day_marker(marker, self.marker_revision)
+        except ConcurrentModificationError:
+            self._set_marker_stale(True)
+            ui.notify("Day marker changed elsewhere; reload before saving", type="warning")
+            return
+        finally:
+            self._saving_marker = None
+
+        self.marker_revision = marker.revision
+        self.marker_dirty = False
+        self._set_marker_stale(False)
         if self.on_marker_saved is not None:
             self.on_marker_saved(self.selected_day)
         ui.notify("Day marker saved", type="positive")
+
+    def database_changed(self, *, events_changed: bool, marker_days: frozenset[date]):
+        if events_changed:
+            self.editor.database_changed()
+            self._render()
+        if self.selected_day not in marker_days:
+            return
+        current = self.timeline.day_marker(self.selected_day) if self.timeline is not None else None
+        current_revision = current.revision if current is not None else 0
+        if self._saving_marker is not None:
+            self.marker_revision = self._saving_marker.revision
+            return
+        if current_revision == self.marker_revision:
+            return
+        if self.marker_dirty:
+            self._set_marker_stale(True)
+        else:
+            self._load_marker_form()
 
     def _render(self):
         if self.timeline is None:
@@ -690,6 +775,11 @@ class DayTimelineView:
             return
 
         self.chunk_detail_content.clear()
+        self._chunk_event_revisions = {
+            event_id: event.revision
+            for event_id in event_ids
+            if (event := self.timeline.repo.get(Event, event_id)) is not None
+        }
         chunk = find_chunk_by_event_ids(self.timeline.repo, event_ids)
         labels = ["Start event", "End event"]
 
@@ -737,11 +827,21 @@ class DayTimelineView:
         self._detail_row("Chunk ID", str(chunk.id or ""))
         self._detail_row("Event IDs", f"{chunk.start_event_id}, {chunk.end_event_id}")
 
-    def _remove_chunk(self, event_ids: list[int]):
+    async def _remove_chunk(self, event_ids: list[int]):
         if self.timeline is None:
             return
 
-        warnings = remove_chunk_source_events(self.timeline.repo, event_ids)
+        try:
+            if self.mutation_api is None:
+                warnings = remove_chunk_source_events(self.timeline.repo, event_ids)
+            else:
+                if set(event_ids) != set(self._chunk_event_revisions):
+                    raise ConcurrentModificationError("chunk events", ",".join(map(str, event_ids)))
+                result = await self.mutation_api.delete_events(self._chunk_event_revisions)
+                warnings = list(result.warnings)
+        except ConcurrentModificationError:
+            ui.notify("Chunk changed elsewhere; reopen it before deleting", type="warning")
+            return
         self.chunk_detail_dialog.close()
         self._render()
         notify_event_change("Chunk source events deleted", warnings)
