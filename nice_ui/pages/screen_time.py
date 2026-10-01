@@ -11,6 +11,7 @@ from timeline.api.query import Query
 from timeline.api.timeline import Timeline
 from timeline.domain.enums import DeviceSource
 from timeline.statistics.tools import human_duration
+from nice_ui.responsive import configure_responsive_table, responsive_chart_options
 
 
 PERIODS = {
@@ -28,14 +29,14 @@ class ScreenTimeIntersectionView:
         self.period = "Day"
 
         with ui.column().classes("w-full gap-4"):
-            with ui.row().classes("w-full items-end gap-3"):
+            with ui.row().classes("w-full items-end gap-3 flex-wrap"):
                 self.activity_select = ui.select(
                     options=[],
                     value=[],
                     label="Activities",
                     multiple=True,
                     on_change=self._activities_changed,
-                ).classes("min-w-[22rem] flex-grow")
+                ).classes("min-w-0 basis-full sm:basis-auto flex-grow")
                 self.clear_button = ui.button(
                     "Clear",
                     icon="clear",
@@ -46,33 +47,39 @@ class ScreenTimeIntersectionView:
                     value=self.period,
                     label="Period",
                     on_change=self._period_changed,
-                ).classes("w-40")
+                ).classes("w-36 sm:w-40")
 
             with ui.card().classes("w-full"):
                 ui.label("Active Screen Intersection").classes("text-h6")
+                columns = [
+                    {"name": "activity", "label": "Activity", "field": "activity"},
+                    {"name": "activity_time", "label": "Activity Time", "field": "activity_time"},
+                    {"name": "screen_time", "label": "Screen Time", "field": "screen_time"},
+                    {"name": "without_screen", "label": "Without Screen", "field": "without_screen"},
+                    {"name": "screen_share", "label": "Screen Share", "field": "screen_share"},
+                ]
                 self.summary_table = ui.table(
-                    columns=[
-                        {"name": "activity", "label": "Activity", "field": "activity"},
-                        {"name": "activity_time", "label": "Activity Time", "field": "activity_time"},
-                        {"name": "screen_time", "label": "Screen Time", "field": "screen_time"},
-                        {"name": "without_screen", "label": "Without Screen", "field": "without_screen"},
-                        {"name": "screen_share", "label": "Screen Share", "field": "screen_share"},
-                    ],
+                    columns=columns,
                     rows=[],
                     pagination=15,
                 ).classes("w-full")
+                configure_responsive_table(
+                    self.summary_table,
+                    columns,
+                    mobile_columns=["activity", "screen_time", "screen_share"],
+                )
 
             with ui.card().classes("w-full"):
                 ui.label("Screen Time by Activity").classes("text-h6")
                 self.chart = ui.echart(
                     self._empty_options("Choose activities")
-                ).classes("w-full h-80")
+                ).classes("bh-chart w-full h-80")
 
             with ui.card().classes("w-full"):
                 ui.label("Screen Share Trend").classes("text-h6")
                 self.trend_chart = ui.echart(
                     self._empty_options("Choose activities")
-                ).classes("w-full h-80")
+                ).classes("bh-chart w-full h-80")
 
     def update(self, timeline: Timeline):
         self.timeline = timeline
@@ -174,7 +181,7 @@ class ScreenTimeIntersectionView:
             without_screen_hours=pl.col("activity_without_screen_seconds") / 3600,
         ).to_dicts()
 
-        return {
+        return responsive_chart_options({
             "tooltip": {
                 "trigger": "axis",
                 "axisPointer": {"type": "shadow"},
@@ -210,7 +217,7 @@ class ScreenTimeIntersectionView:
                     "data": [round(row["without_screen_hours"], 3) for row in rows],
                 },
             ],
-        }
+        })
 
     @staticmethod
     def _trend_options(df: pl.DataFrame, period: str) -> dict:
@@ -233,7 +240,7 @@ class ScreenTimeIntersectionView:
         periods = df["period_label"].unique(maintain_order=True).to_list()
         activities = df["activity"].unique(maintain_order=True).to_list()
 
-        return {
+        return responsive_chart_options({
             "tooltip": {
                 "trigger": "axis",
                 ":valueFormatter": "value => `${value.toFixed(1)}%`",
@@ -281,7 +288,7 @@ class ScreenTimeIntersectionView:
                     )
                 ]
             ],
-        }
+        })
 
     @staticmethod
     def _period_label(period: str) -> pl.Expr:

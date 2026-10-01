@@ -253,7 +253,7 @@ def render_day_timeline_html(
     <div class="day-timeline">
       <style>{timeline_css()}</style>
       <div class="timeline-date">{escape(day.isoformat())}</div>
-      <div class="calendar" style="grid-template-columns:{grid_columns};">
+      <div class="calendar" style="--source-count:{len(sources)};grid-template-columns:{grid_columns};">
         <div class="corner"></div>
         {source_headers}
         <div class="time-axis">
@@ -433,6 +433,41 @@ def timeline_css() -> str:
       font-size: 11px;
       color: #111827;
     }
+    @media (max-width: 1023px) {
+      .calendar {
+        min-width: max(100%, 300px);
+        grid-template-columns: 48px repeat(var(--source-count, 1), minmax(110px, 1fr)) !important;
+      }
+      .columns {
+        grid-template-columns: repeat(var(--source-count, 1), minmax(110px, 1fr)) !important;
+      }
+      .time-axis,
+      .calendar-body {
+        height: 960px;
+      }
+      .hour-label {
+        right: 6px;
+        font-size: 10px;
+      }
+      .source-header {
+        height: 30px;
+        font-size: 11px;
+      }
+      .chunk {
+        left: 3px;
+        right: 3px;
+        min-height: 14px;
+      }
+      .chunk span {
+        padding: 2px 3px;
+        font-size: 10px;
+        line-height: 12px;
+      }
+      .point span {
+        max-width: 92px;
+        font-size: 10px;
+      }
+    }
     """
 
 
@@ -480,7 +515,7 @@ class DayTimelineView:
                         ui.tooltip("Next day")
 
             with ui.row().classes("w-full gap-4 items-stretch"):
-                with ui.card().classes("flex-[3] min-w-0"):
+                with ui.card().classes("bh-card w-full min-w-0"):
                     with ui.row().classes("w-full items-center justify-between"):
                         ui.label("Day Marker").classes("text-subtitle1")
                         self.marker_save_button = ui.button(
@@ -494,8 +529,8 @@ class DayTimelineView:
                             "This marker changed elsewhere. Reload before saving."
                         ).classes("text-warning text-caption flex-1")
                         ui.button("Reload", on_click=self._reload_marker).props("flat dense")
-                    with ui.row().classes("w-full gap-3 items-start"):
-                        with ui.column().classes("min-w-[12rem] flex-1 gap-1"):
+                    with ui.row().classes("w-full gap-3 items-start flex-col sm:flex-row"):
+                        with ui.column().classes("w-full sm:min-w-[12rem] sm:flex-1 gap-1"):
                             with ui.row().classes("w-full items-center justify-between"):
                                 ui.label("Habits").classes("text-subtitle2 text-grey-7")
                                 with ui.button(
@@ -511,14 +546,14 @@ class DayTimelineView:
                                 ).props("outline round dense")
                             with ui.column().classes("w-full gap-1") as self.habits_container:
                                 pass
-                        with ui.column().classes("w-40 gap-1"):
+                        with ui.column().classes("w-full sm:w-40 gap-1"):
                             self.mood_input = ui.number(
                                 "Mood", on_change=self._mark_marker_dirty
                             ).classes("w-full")
                             self.people_input = ui.textarea(
                                 "People", on_change=self._mark_marker_dirty
                             ).classes("w-full")
-                        with ui.column().classes("min-w-[16rem] flex-[2] gap-1"):
+                        with ui.column().classes("w-full sm:min-w-[16rem] sm:flex-[2] gap-1"):
                             ui.label("Quick note").classes("text-subtitle2 text-grey-7")
                             with ui.column().classes("w-full gap-2") as self.quick_note_editor_panel:
                                 self.quick_note_input = ui.codemirror(
@@ -530,10 +565,7 @@ class DayTimelineView:
                             self.quick_note_preview = ui.markdown("").classes(
                                 "w-full min-h-[5rem] border border-slate-200 rounded p-2"
                             )
-                with ui.card().classes("flex-1 min-w-[10rem]"):
-                    pass
-
-            with ui.card().classes("w-full overflow-x-auto"):
+            with ui.card().classes("bh-card w-full overflow-x-auto"):
                 self.container = ui.html("", sanitize=False).classes("w-full")
                 self.container.on(
                     "click",
@@ -554,7 +586,9 @@ class DayTimelineView:
         self.marker_stale_row.set_visibility(False)
         self.set_note_editor_visible(self.note_editor_visible)
         self._load_marker_form()
-        with ui.dialog() as self.chunk_detail_dialog, ui.card().classes("w-[30rem] max-w-full"):
+        with ui.dialog() as self.chunk_detail_dialog, ui.card().classes(
+            "bh-dialog-panel w-[30rem] max-w-full"
+        ):
             ui.label("Chunk Details").classes("text-h6")
             with ui.column().classes("w-full gap-2") as self.chunk_detail_content:
                 pass

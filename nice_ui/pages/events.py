@@ -10,6 +10,7 @@ from timeline.domain.enums import DeviceSource, EventKind
 from timeline.domain.models import Event
 from timeline.storage.repository import SQLiteRepository
 from timeline.storage.errors import ConcurrentModificationError
+from nice_ui.responsive import visible_columns_expression
 
 
 def parse_event_timestamp(value: str) -> datetime:
@@ -54,7 +55,9 @@ class EventEditor:
         self.stale = False
         self._loading = False
 
-        with ui.dialog() as self.dialog, ui.card().classes("w-[32rem] max-w-full"):
+        with ui.dialog() as self.dialog, ui.card().classes(
+            "bh-dialog-panel w-[32rem] max-w-full"
+        ):
             ui.label("Edit Event").classes("text-h6")
             with ui.row().classes("w-full items-center gap-2") as self.stale_row:
                 ui.icon("warning", color="warning")
@@ -276,6 +279,14 @@ class EventsView:
                     "descending": True,
                 },
             ).classes("w-full text-caption" if compact else "w-full")
+            if not compact:
+                self.table.props(
+                    "dense flat "
+                    + visible_columns_expression(
+                        ["timestamp", "source", "name"],
+                        [column["name"] for column in columns],
+                    )
+                ).classes("bh-responsive-table")
             self.table.on("rowClick", self._row_clicked)
 
         self.editor = EventEditor(on_change=self._editor_changed, mutation_api=mutation_api)

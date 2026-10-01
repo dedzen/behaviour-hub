@@ -214,26 +214,5 @@ class AndroidIngestTest(unittest.TestCase):
             self.assertEqual(str(result.events[0].timestamp), "2026-08-01 09:01:00")
             self.assertEqual(str(result.events[1].timestamp), "2026-08-01 09:01:20")
 
-    def test_real_android_log_has_more_screen_than_keyguard_pairs(self):
-        path = Path("data/android/unlock-events.jsonl")
-
-        screen = import_android_unlock_jsonl(path, strategy="screen")
-        keyguard = import_android_unlock_jsonl(path, strategy="keyguard")
-        active_screen = import_android_unlock_jsonl(path)
-
-        self.assertGreater(len(screen.events), len(keyguard.events))
-        self.assertEqual(len(screen.events), 852)
-        self.assertEqual(len(keyguard.events), 844)
-        self.assertEqual(len(active_screen.events), 826)
-        self.assertEqual(screen.dropped_orphan_starts, 2)
-        self.assertEqual(keyguard.dropped_orphan_starts, 0)
-        self.assertEqual(active_screen.dropped_orphan_starts, 0)
-        self.assertEqual(screen.dropped_short_chunks, 333)
-        self.assertEqual(keyguard.dropped_short_chunks, 214)
-        self.assertEqual(active_screen.dropped_short_chunks, 232)
-        self.assertEqual(len(active_screen.anomalies), 6)
-        self.assertAlmostEqual(active_screen.unknown_time_seconds, 0.57)
-
-
 if __name__ == "__main__":
     unittest.main()

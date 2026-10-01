@@ -47,6 +47,8 @@ class DayTimelineViewHelpersTest(unittest.TestCase):
         self.assertIn("Unlock", html)
         self.assertIn('data-event-ids="1,2"', html)
         self.assertIn('data-event-ids="5"', html)
+        self.assertIn("--source-count:2", html)
+        self.assertIn("@media (max-width: 1023px)", html)
 
     def test_activity_colors_are_stable(self):
         self.assertEqual(

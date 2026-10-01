@@ -9,7 +9,7 @@ class SummaryView:
         with ui.card().classes("w-full"):
             ui.label("Summary").classes("text-h6")
 
-            with ui.grid(columns=4).classes("gap-x-6 gap-y-2"):
+            with ui.grid().classes("grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-2 w-full"):
                 self.sessions = ui.label()
                 self.total = ui.label()
 

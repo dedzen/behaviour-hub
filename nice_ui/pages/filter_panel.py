@@ -153,6 +153,27 @@ class FilterPanel:
         self.activities.props["ticked"] = list(selected)
         self.activities.update()
 
+    def summary_labels(self) -> list[str]:
+        labels = [self.state.preset]
+        sources = set(self.state.sources or ())
+        if sources:
+            labels.append(" + ".join(sorted(source.title() for source in sources)))
+        activities = sorted(self.state.activities or ())
+        if len(activities) == 1:
+            labels.append(activities[0])
+        elif activities:
+            labels.append(f"{len(activities)} activities")
+        minimum = self.state.min_duration
+        maximum = self.state.max_duration
+        if minimum not in (None, self.DEFAULT_DURATION["min"]) or maximum not in (
+            None,
+            self.DEFAULT_DURATION["max"],
+        ):
+            labels.append(
+                f"{human_duration(minimum or 0)}–{human_duration(maximum or self.DEFAULT_DURATION['max'])}"
+            )
+        return labels
+
     def reset(self):
         self.preset.set_value("All time")
         self.phone_source.set_value(False)

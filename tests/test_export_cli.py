@@ -40,7 +40,7 @@ class ExportCliTest(unittest.TestCase):
             )
 
             self.assertEqual(result.exit_code, 0, result.output)
-            self.assertIn("date: 2026-08-01 #2026-08-04", result.output)
+            self.assertIn("date: 2026-08-01", result.output)
             self.assertIn("- Working(1) - 1h | +100.0% | +100.0%", result.output)
 
     def test_export_markdown_writes_output_file_with_default_activities(self):

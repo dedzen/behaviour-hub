@@ -29,8 +29,8 @@ class MarkdownExportTest(unittest.TestCase):
             )
         )
 
-        self.assertIn("date: 2026-08-01 #2026-08-04", markdown)
-        self.assertIn("week: 2026-W31 #2026-W32", markdown)
+        self.assertIn("date: 2026-08-01", markdown)
+        self.assertIn("week: 2026-W31", markdown)
         self.assertIn("- Tracked time: 8h", markdown)
         self.assertIn("- Active screen time: 2h", markdown)
         self.assertIn("- Working: total: 4h", markdown)

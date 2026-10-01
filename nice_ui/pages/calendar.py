@@ -171,10 +171,10 @@ class CalendarPage:
         self._metrics_by_day: dict[date, CalendarDayMetrics] = {}
         self.calendar_folded = False
 
-        with ui.column().classes("w-full p-4 gap-4"):
-            with ui.row().classes("w-full items-center justify-between gap-3"):
+        with ui.column().classes("bh-page w-full p-4 gap-4"):
+            with ui.row().classes("w-full items-center justify-between gap-2 flex-wrap"):
                 ui.label("Calendar").classes("text-h5")
-                with ui.row().classes("items-center gap-1"):
+                with ui.row().classes("items-center gap-1 flex-wrap justify-end"):
                     ui.button(
                         icon="chevron_left",
                         on_click=lambda: self._move_day(-1),
@@ -192,7 +192,9 @@ class CalendarPage:
                         icon="chevron_left",
                         on_click=lambda: self._move_month(-1),
                     ).props("flat round dense")
-                    self.month_label = ui.label("").classes("text-subtitle1 min-w-[9rem] text-center")
+                    self.month_label = ui.label("").classes(
+                        "text-subtitle1 min-w-[7rem] sm:min-w-[9rem] text-center"
+                    )
                     ui.button(
                         icon="chevron_right",
                         on_click=lambda: self._move_month(1),
@@ -203,8 +205,10 @@ class CalendarPage:
                         on_click=self._select_today,
                     ).props("outline dense")
 
-            with ui.row().classes("w-full items-start gap-4"):
-                with ui.column().classes("w-[28rem] max-w-full shrink-0 gap-3") as self.calendar_panel:
+            with ui.row().classes("w-full items-start gap-4 flex-col lg:flex-row"):
+                with ui.column().classes(
+                    "w-full lg:w-[28rem] max-w-full shrink-0 gap-3"
+                ) as self.calendar_panel:
                     with ui.row().classes("items-center gap-1"):
                         ui.button("Day").props("unelevated dense color=primary")
                         with ui.button("Week").props("outline dense disable"):
@@ -342,13 +346,17 @@ class CalendarPage:
         with ui.column().classes(" ".join(classes)).on(
             "click",
             lambda _, selected_day=summary.day: self._select_day(selected_day),
-        ):
+        ).classes("bh-calendar-cell"):
             with ui.row().classes("w-full items-center justify-between"):
                 ui.label(str(summary.day.day)).classes("text-sm font-medium")
                 if summary.mood is not None:
                     ui.label(f"{summary.mood:g}").classes("text-xs text-blue-700")
-            ui.label(f"T {summary.tracked_time}").classes("text-xs text-grey-8")
-            ui.label(f"S {summary.screen_time}").classes("text-xs text-grey-8")
+            ui.label(f"T {summary.tracked_time}").classes(
+                "bh-calendar-secondary text-xs text-grey-8"
+            )
+            ui.label(f"S {summary.screen_time}").classes(
+                "bh-calendar-secondary text-xs text-grey-8"
+            )
             with ui.row().classes("w-full items-center gap-1 text-grey-6"):
                 if summary.has_note:
                     with ui.icon("edit").classes("text-[14px]"):

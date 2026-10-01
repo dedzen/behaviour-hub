@@ -4,6 +4,7 @@ from nicegui import ui
 import polars as pl
 
 from timeline.api.timeline import Timeline
+from nice_ui.responsive import responsive_chart_options
 
 
 PERIODS = {
@@ -19,38 +20,38 @@ class PlotsView:
         self.timeline: Timeline | None = None
         self.period = "Day"
 
-        with ui.column().classes("w-full gap-4"):
+        with ui.column().classes("w-full gap-3 sm:gap-4"):
             with ui.row().classes("w-full justify-end"):
                 ui.select(
                     list(PERIODS),
                     value=self.period,
                     label="Period",
                     on_change=self._period_changed,
-                ).classes("w-40")
+                ).classes("w-36 sm:w-40")
 
             with ui.card().classes("w-full"):
                 ui.label("Activity Time Share").classes("text-h6")
                 self.share_chart = ui.echart(
                     self._empty_options("No activity time")
-                ).classes("w-full h-96")
+                ).classes("bh-chart w-full h-96")
 
             with ui.card().classes("w-full"):
                 ui.label("Total Tracked Time").classes("text-h6")
                 self.total_chart = ui.echart(
                     self._empty_options("No tracked time")
-                ).classes("w-full h-80")
+                ).classes("bh-chart-compact w-full h-80")
 
             with ui.card().classes("w-full"):
                 ui.label("Top Activity Composition").classes("text-h6")
                 self.stacked_chart = ui.echart(
                     self._empty_options("No activity composition")
-                ).classes("w-full h-96")
+                ).classes("bh-chart w-full h-96")
 
             with ui.card().classes("w-full"):
                 ui.label("Activity Time Trend").classes("text-h6")
                 self.trend_chart = ui.echart(
                     self._empty_options("No activity trend")
-                ).classes("w-full h-96")
+                ).classes("bh-chart w-full h-96")
 
     def update(self, timeline: Timeline):
         self.timeline = timeline
@@ -87,7 +88,7 @@ class PlotsView:
             )
         )
 
-        return {
+        return responsive_chart_options({
             "tooltip": {
                 "trigger": "item",
                 ":valueFormatter": "value => `${value.toFixed(2)} h`",
@@ -114,7 +115,7 @@ class PlotsView:
                     ],
                 }
             ],
-        }
+        }, pie=True)
 
     def _total_options(self, timeline: Timeline) -> dict:
         period = PERIODS[self.period]
@@ -131,7 +132,7 @@ class PlotsView:
             .sort("period")
         )
 
-        return {
+        return responsive_chart_options({
             "tooltip": {
                 "trigger": "axis",
                 ":valueFormatter": "value => `${value.toFixed(2)} h`",
@@ -157,7 +158,7 @@ class PlotsView:
                     "data": [round(value, 2) for value in df["hours"].to_list()],
                 }
             ],
-        }
+        })
 
     def _stacked_options(self, timeline: Timeline) -> dict:
         period = PERIODS[self.period]
@@ -190,7 +191,7 @@ class PlotsView:
         periods = df["period_label"].unique(maintain_order=True).to_list()
         activities = df["activity"].unique(maintain_order=True).to_list()
 
-        return {
+        return responsive_chart_options({
             "tooltip": {
                 "trigger": "axis",
                 "axisPointer": {"type": "shadow"},
@@ -221,7 +222,7 @@ class PlotsView:
                 chart_type="bar",
                 stack="total",
             ),
-        }
+        })
 
     def _trend_options(self, timeline: Timeline) -> dict:
         period = PERIODS[self.period]
@@ -254,7 +255,7 @@ class PlotsView:
         periods = df["period_label"].unique(maintain_order=True).to_list()
         activities = df["activity"].unique(maintain_order=True).to_list()
 
-        return {
+        return responsive_chart_options({
             "tooltip": {
                 "trigger": "axis",
                 ":valueFormatter": "value => `${value.toFixed(2)} h`",
@@ -286,7 +287,7 @@ class PlotsView:
                 smooth=True,
                 show_symbol=False,
             ),
-        }
+        })
 
     @staticmethod
     def _period_activity_series(

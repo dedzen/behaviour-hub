@@ -5,6 +5,7 @@ import polars as pl
 
 from timeline.api.timeline import Timeline
 from timeline.statistics.tools import human_duration
+from nice_ui.responsive import configure_responsive_table
 
 
 class AnalyticsView:
@@ -18,6 +19,7 @@ class AnalyticsView:
                     ("total", "Total"),
                     ("percent", "Share"),
                 ],
+                mobile_columns=["name", "total", "percent"],
             )
             self.day_category = AnalyticsTable(
                 "Daily Activity Mix",
@@ -29,6 +31,7 @@ class AnalyticsView:
                     ("total", "Total"),
                     ("average", "Average"),
                 ],
+                mobile_columns=["period", "name", "total"],
             )
             self.rolling = AnalyticsTable(
                 "Rolling Daily Activity Time",
@@ -39,6 +42,7 @@ class AnalyticsView:
                     ("total", "Total"),
                     ("rolling_average", "Rolling Avg"),
                 ],
+                mobile_columns=["period", "name", "rolling_average"],
             )
             self.transitions = AnalyticsTable(
                 "Short-gap Activity Transitions",
@@ -49,6 +53,7 @@ class AnalyticsView:
                     ("average_gap", "Avg Gap"),
                     ("to_average", "Next Avg"),
                 ],
+                mobile_columns=["from_activity", "to_activity", "transitions"],
             )
 
     def update(self, timeline: Timeline):
@@ -131,22 +136,33 @@ class AnalyticsView:
 
 
 class AnalyticsTable:
-    def __init__(self, title: str, columns: list[tuple[str, str]]):
+    def __init__(
+        self,
+        title: str,
+        columns: list[tuple[str, str]],
+        mobile_columns: list[str] | None = None,
+    ):
         self.card = ui.card().classes("w-full")
         with self.card:
             ui.label(title).classes("text-h6")
+            table_columns = [
+                {
+                    "name": name,
+                    "label": label,
+                    "field": name,
+                }
+                for name, label in columns
+            ]
             self.table = ui.table(
-                columns=[
-                    {
-                        "name": name,
-                        "label": label,
-                        "field": name,
-                    }
-                    for name, label in columns
-                ],
+                columns=table_columns,
                 rows=[],
                 pagination=15,
             ).classes("w-full")
+            configure_responsive_table(
+                self.table,
+                table_columns,
+                mobile_columns=mobile_columns or [columns[0][0], columns[-1][0]],
+            )
 
     def update(self, df: pl.DataFrame):
         self.card.visible = not df.is_empty()

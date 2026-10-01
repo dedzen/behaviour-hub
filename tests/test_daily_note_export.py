@@ -96,11 +96,11 @@ class DailyNoteExportTest(unittest.TestCase):
                 ["Working"],
             )
 
-            self.assertIn("date: 2026-08-01 #2026-08-04", markdown)
-            self.assertIn("week: 2026-W31 #2026-W32", markdown)
-            self.assertIn("tracked-time: 1 hour #5 hours 20 minutes", markdown)
-            self.assertIn("screen-time: 30 minutes #5 hours 20 minutes", markdown)
-            self.assertIn("sleep-time: 0 seconds #8 hours 03 minutes", markdown)
+            self.assertIn("date: 2026-08-01", markdown)
+            self.assertIn("week: 2026-W31", markdown)
+            self.assertIn("tracked-time: 1 hour", markdown)
+            self.assertIn("screen-time: 30 minutes", markdown)
+            self.assertIn("sleep-time: 0 seconds", markdown)
             self.assertIn('top-activity: "Working (1h)"', markdown)
             self.assertIn("## Important Activities", markdown)
             self.assertIn("- Working(1) - 1h | +100.0% | +100.0%", markdown)

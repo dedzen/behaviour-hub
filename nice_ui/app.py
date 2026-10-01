@@ -14,6 +14,7 @@ from nice_ui.pages.events import EventsView
 from nice_ui.pages.screen_time import ScreenTimeIntersectionView
 from nice_ui.pages.calendar import CalendarPage
 from nice_ui.runtime import DashboardRuntime, DashboardSession, DataChange
+from nice_ui.responsive import AppShell, VIEWPORT
 
 DATABASE_PATH = Path("timeline.db")
 EMBED_INCOMING_PATH = Path("data/embed/incoming.csv")
@@ -22,25 +23,8 @@ RUNTIME = DashboardRuntime(DATABASE_PATH)
 app.on_startup(RUNTIME.initialize)
 
 
-def build_header(active_page: str):
-    def navigate(event):
-        match event.value:
-            case "Main":
-                ui.navigate.to("/")
-            case "Calendar":
-                ui.navigate.to("/calendar")
-            case "Import/Export":
-                ui.navigate.to("/import-export")
-
-    with ui.header().classes("items-center justify-between px-6"):
-        ui.label("Behaviour Hub").classes("text-h6")
-        with ui.tabs(value=active_page).props( #type: ignore
-            "dense shrink stretch indicator-color=white"
-        ) as page_tabs:
-            ui.tab("Main", icon="dashboard")
-            ui.tab("Calendar", icon="calendar_month")
-            ui.tab("Import/Export", icon="sync_alt")
-            page_tabs.on_value_change(navigate)
+def build_header(active_page: str, *, on_filter=None) -> AppShell:
+    return AppShell(active_page, on_filter=on_filter)
 
 
 def placeholder_action(action: str):
@@ -170,19 +154,41 @@ class MainDashboard:
     def __init__(self, session: DashboardSession):
         self.session = session
         self.current_timeline = session.timeline
+        self._dirty_tabs: set[str] = set()
 
-        build_header("Main")
-        with ui.row().classes("w-full items-start p-4"):
-            with ui.card().classes("w-80"):
-                self.filters = FilterPanel(session.timeline, on_apply=self.refresh)
+        with ui.left_drawer(value=None, bordered=True).props("width=320 breakpoint=1024").classes(
+            "bh-filter-drawer bg-white"
+        ) as self.filter_drawer:
+            self.filters = FilterPanel(session.timeline, on_apply=self._apply_filters)
 
-            with ui.column().classes("flex-grow min-w-0"):
-                with ui.tabs().classes("w-full") as self.tabs:
-                    statistics_tab = ui.tab("Statistics").classes("main-tab-shortcut-1")
-                    analytics_tab = ui.tab("Analytics").classes("main-tab-shortcut-2")
-                    plots_tab = ui.tab("Plots").classes("main-tab-shortcut-3")
-                    screen_time_tab = ui.tab("Screen Time").classes("main-tab-shortcut-4")
-                with ui.tab_panels(self.tabs, value=analytics_tab).classes("w-full"):
+        build_header("Main", on_filter=self.filter_drawer.toggle)
+        with ui.column().classes("bh-page w-full p-4 gap-3"):
+            with ui.row().classes(
+                "bh-filter-summary bh-mobile-only w-full items-center gap-2 no-wrap overflow-x-auto"
+            ) as self.filter_summary:
+                pass
+
+            with ui.column().classes(
+                "bh-dashboard-content w-full max-w-none flex-grow min-w-0 self-stretch"
+            ) as self.dashboard_content:
+                with ui.tabs().props("dense no-caps align=left mobile-arrows outside-arrows").classes(
+                    "bh-dashboard-tabs w-full overflow-x-auto"
+                ) as self.tabs:
+                    statistics_tab = ui.tab("Statistics", icon="query_stats").classes(
+                        "main-tab-shortcut-1"
+                    )
+                    analytics_tab = ui.tab("Analytics", icon="table_chart").classes(
+                        "main-tab-shortcut-2"
+                    )
+                    plots_tab = ui.tab("Plots", icon="insert_chart").classes(
+                        "main-tab-shortcut-3"
+                    )
+                    screen_time_tab = ui.tab("Screen Time", icon="phone_android").classes(
+                        "main-tab-shortcut-4"
+                    )
+                with ui.tab_panels(self.tabs, value=analytics_tab).classes(
+                    "bh-tab-panels w-full bg-transparent"
+                ):
                     with ui.tab_panel(statistics_tab):
                         self.statistics = StatisticsView()
                     with ui.tab_panel(analytics_tab):
@@ -193,16 +199,19 @@ class MainDashboard:
                         self.screen_time = ScreenTimeIntersectionView()
                 self.tabs.on_value_change(lambda _: self.update_current_tab())
 
-            with ui.column().classes("w-12 shrink-0 items-center pt-2 opacity-60 hover:opacity-100"):
+            with ui.column().classes(
+                "fixed right-3 bottom-20 lg:bottom-4 z-20 items-center opacity-80 hover:opacity-100"
+            ):
                 with ui.button(
                     icon="event_note",
                     on_click=lambda: events_dialog.open(),
-                ).props("flat round dense"):
+                ).props("round color=primary aria-label='Open event viewer'"):
                     ui.tooltip("Event viewer")
 
             with ui.dialog() as events_dialog:
                 with ui.column().classes(
-                    "w-[56rem] max-w-[95vw] max-h-[90vh] bg-white p-4 rounded shadow-xl gap-3"
+                    "bh-dialog-panel w-[56rem] max-w-[95vw] max-h-[90vh] "
+                    "bg-white p-4 rounded shadow-xl gap-3"
                 ):
                     with ui.row().classes("w-full items-center justify-between"):
                         ui.label("Event Viewer").classes("text-h6")
@@ -217,18 +226,34 @@ class MainDashboard:
         self.refresh()
         ui.add_body_html(main_shortcut_script())
 
+    async def _apply_filters(self) -> None:
+        self.refresh()
+        is_mobile = await ui.run_javascript("window.innerWidth < 1024")
+        if is_mobile:
+            self.filter_drawer.hide()
+
+    def _render_filter_summary(self) -> None:
+        self.filter_summary.clear()
+        with self.filter_summary:
+            ui.button(icon="tune", on_click=self.filter_drawer.toggle).props(
+                "flat round dense aria-label=Filters"
+            )
+            for label in self.filters.summary_labels():
+                ui.badge(label).props("outline color=primary").classes("whitespace-nowrap")
+
     def refresh(self) -> None:
         self.current_timeline = self.filters.timeline()
-        self.statistics.update(self.current_timeline)
-        self.analytics.update(self.current_timeline)
-        self.plots.update(self.current_timeline)
-        self.screen_time.update(self.current_timeline)
         self.events.update(self.current_timeline)
+        self._render_filter_summary()
+        self._dirty_tabs = {"Statistics", "Analytics", "Plots", "Screen Time"}
+        self.update_current_tab()
 
     def update_current_tab(self) -> None:
         current_tab = self.tabs.value
         if isinstance(current_tab, ui.tab):
             current_tab = current_tab.label
+        if current_tab not in self._dirty_tabs:
+            return
         match current_tab:
             case "Statistics":
                 self.statistics.update(self.current_timeline)
@@ -238,27 +263,27 @@ class MainDashboard:
                 self.plots.update(self.current_timeline)
             case "Screen Time":
                 self.screen_time.update(self.current_timeline)
+        self._dirty_tabs.discard(current_tab)
 
     def database_changed(self, change: DataChange) -> None:
         if not change.events_changed:
             return
         self.filters.refresh_options()
         self.current_timeline = self.filters.timeline()
-        self.statistics.update(self.current_timeline)
-        self.analytics.update(self.current_timeline)
-        self.plots.update(self.current_timeline)
-        self.screen_time.update(self.current_timeline)
         self.events.database_changed(self.current_timeline)
+        self._render_filter_summary()
+        self._dirty_tabs = {"Statistics", "Analytics", "Plots", "Screen Time"}
+        self.update_current_tab()
 
 
-@ui.page("/")
+@ui.page("/", viewport=VIEWPORT)
 def main_page():
     session = DashboardSession(RUNTIME, ui.context.client)
     dashboard = MainDashboard(session)
     session.subscribe(dashboard.database_changed)
 
 
-@ui.page("/calendar")
+@ui.page("/calendar", viewport=VIEWPORT)
 def calendar_page():
     build_header("Calendar")
     session = DashboardSession(RUNTIME, ui.context.client)
@@ -271,15 +296,15 @@ def calendar_page():
     )
 
 
-@ui.page("/import-export")
+@ui.page("/import-export", viewport=VIEWPORT)
 def import_export_page():
     build_header("Import/Export")
 
-    with ui.column().classes("w-full p-6 gap-4"):
+    with ui.column().classes("bh-page w-full p-6 gap-4"):
         ui.label("Import/Export").classes("text-h5")
 
-        with ui.row().classes("w-full items-stretch gap-6"):
-            with ui.column().classes("w-1/2 min-w-[22rem] gap-4"):
+        with ui.row().classes("w-full items-stretch gap-6 flex-col lg:flex-row"):
+            with ui.column().classes("w-full lg:w-1/2 min-w-0 gap-4"):
                 with ui.row().classes("w-full items-center justify-between"):
                     ui.label("Import").classes("text-h6")
                     with ui.button(
@@ -293,7 +318,7 @@ def import_export_page():
                         "IP",
                         value="192.168.3.55",
                     ).classes("w-full")
-                    with ui.row().classes("w-full gap-2"):
+                    with ui.row().classes("w-full gap-2 flex-wrap"):
                         ui.button(
                             "Download log",
                             icon="download",
@@ -325,7 +350,7 @@ def import_export_page():
                         "IP",
                         value="192.168.3.44:8787",
                     ).classes("w-full")
-                    with ui.row().classes("w-full gap-2"):
+                    with ui.row().classes("w-full gap-2 flex-wrap"):
                         ui.button(
                             "Download log",
                             icon="download",
@@ -362,13 +387,13 @@ def import_export_page():
                     ],
                 )
 
-            ui.separator().props("vertical").classes("self-stretch")
+            ui.separator().props("vertical").classes("self-stretch bh-desktop-only")
 
-            with ui.column().classes("flex-1 min-w-[22rem] gap-4"):
+            with ui.column().classes("flex-1 min-w-0 gap-4"):
                 ui.label("Export").classes("text-h6")
                 with ui.card().classes("w-full"):
                     ui.label("Export").classes("text-subtitle1")
-                    with ui.row().classes("w-full gap-2"):
+                    with ui.row().classes("w-full gap-2 flex-wrap"):
                         ui.button(
                             "Export data",
                             icon="ios_share",

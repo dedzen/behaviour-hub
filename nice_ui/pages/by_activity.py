@@ -3,6 +3,8 @@ import polars as pl
 
 from timeline.api.timeline import Timeline
 from timeline.statistics.tools import human_duration
+from nice_ui.responsive import configure_responsive_table
+
 
 class ActivityView:
 
@@ -11,40 +13,48 @@ class ActivityView:
         with self.card:
             ui.label("Activity Statistics").classes("text-h6")
 
+            columns = [
+                {
+                    "name": "name",
+                    "label": "Activity",
+                    "field": "name",
+                },
+                {
+                    "name": "sessions",
+                    "label": "Sessions",
+                    "field": "sessions",
+                },
+                {
+                    "name": "total",
+                    "label": "Total",
+                    "field": "total",
+                },
+                {
+                    "name": "average",
+                    "label": "Average",
+                    "field": "average",
+                },
+                {
+                    "name": "median",
+                    "label": "Median",
+                    "field": "median",
+                },
+            ]
             self.table = ui.table(
-                columns=[
-                    {
-                        "name": "name",
-                        "label": "Activity",
-                        "field": "name",
-                    },
-                    {
-                        "name": "sessions",
-                        "label": "Sessions",
-                        "field": "sessions",
-                    },
-                    {
-                        "name": "total",
-                        "label": "Total",
-                        "field": "total",
-                    },
-                    {
-                        "name": "average",
-                        "label": "Average",
-                        "field": "average",
-                    },
-                    {
-                        "name": "median",
-                        "label": "Median",
-                        "field": "median",
-                    },
-                ],
+                columns=columns,
                 rows=[],
                 pagination=20,
             ).classes("w-full")
+            configure_responsive_table(
+                self.table,
+                columns,
+                mobile_columns=["name", "sessions", "total"],
+            )
+
     def set_visible(self, visible: bool):
         self.card.visible = visible
         self.card.update()
+
     def update(
         self,
         timeline: Timeline,
