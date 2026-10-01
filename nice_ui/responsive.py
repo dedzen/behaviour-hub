@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from html import escape
 from typing import Any
 
 from nicegui import ui
@@ -20,6 +21,7 @@ class NavigationItem:
 NAVIGATION = (
     NavigationItem("Main", "Dashboard", "dashboard", "/"),
     NavigationItem("Calendar", "Calendar", "calendar_month", "/calendar"),
+    NavigationItem("Goals", "Goals", "flag", "/goals"),
     NavigationItem("Import/Export", "Transfer", "sync_alt", "/import-export"),
 )
 
@@ -28,15 +30,62 @@ RESPONSIVE_CSS = r"""
 :root {
   --bh-mobile-nav-height: 58px;
   --bh-page-gap: 1rem;
+  --bh-surface: #ffffff;
+  --bh-surface-subtle: #f8fafc;
+  --bh-border: #e2e8f0;
+  --bh-text-muted: #64748b;
+  --bh-radius: .8rem;
+  --bh-shadow: 0 1px 2px rgba(15, 23, 42, .05);
 }
 
 html, body {
   min-width: 320px;
+  background: var(--bh-surface-subtle);
+}
+
+.bh-card {
+  border: 1px solid var(--bh-border);
+  border-radius: var(--bh-radius);
+  box-shadow: var(--bh-shadow);
+}
+
+.bh-kpi-card {
+  min-height: 8.5rem;
+  justify-content: space-between;
+}
+
+.bh-kpi-value {
+  font-size: clamp(1.6rem, 3vw, 2.1rem);
+  font-weight: 650;
+  line-height: 1.1;
+  letter-spacing: -.025em;
+}
+
+.bh-empty-state {
+  width: 100%;
+  min-height: 8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--bh-text-muted);
+  border: 1px dashed var(--bh-border);
+  border-radius: .65rem;
+}
+
+.q-btn:focus-visible,
+.q-tab:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, .35);
+  outline-offset: 2px;
 }
 
 .bh-header {
   padding-left: max(1rem, env(safe-area-inset-left));
   padding-right: max(1rem, env(safe-area-inset-right));
+  z-index: 5000 !important;
+  pointer-events: auto !important;
 }
 
 .bh-mobile-nav {
@@ -54,6 +103,66 @@ html, body {
 .bh-mobile-nav .q-tab__label {
   font-size: 11px;
   line-height: 1.1;
+}
+
+.bh-desktop-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: fixed;
+  top: max(8px, env(safe-area-inset-top));
+  right: max(16px, env(safe-area-inset-right));
+  z-index: 10000;
+  pointer-events: auto !important;
+}
+
+.bh-desktop-nav-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, .55);
+  border-radius: 8px;
+  color: #ffffff !important;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  text-decoration: none !important;
+  cursor: pointer;
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  transition: background-color .12s ease, color .12s ease, border-color .12s ease;
+}
+
+.bh-desktop-nav-item:hover,
+.bh-desktop-nav-item:focus-visible,
+.bh-desktop-nav-item-active {
+  color: #1d4ed8 !important;
+  background: #ffffff;
+  border-color: #ffffff;
+  outline: none;
+}
+
+.bh-desktop-nav-item .material-icons {
+  font-size: 19px;
+}
+
+.bh-nav-link {
+  display: flex;
+  text-decoration: none;
+}
+
+.bh-mobile-nav .bh-nav-link {
+  min-width: 0;
+  min-height: var(--bh-mobile-nav-height);
+  padding: 5px 4px;
+  color: #64748b;
+}
+
+.bh-mobile-nav .bh-nav-link-active {
+  color: #2563eb;
 }
 
 .bh-responsive-table {
@@ -183,12 +292,6 @@ html, body {
 """
 
 
-def navigate_to(key: str) -> None:
-    item = next((item for item in NAVIGATION if item.key == key), None)
-    if item is not None:
-        ui.navigate.to(item.path)
-
-
 class AppShell:
     """Shared adaptive navigation with a single future metadata insertion point."""
 
@@ -205,22 +308,42 @@ class AppShell:
                 ui.label("Behaviour Hub").classes("text-h6 bh-desktop-only")
                 ui.label(active.label).classes("text-subtitle1 truncate bh-mobile-only")
 
-            with ui.tabs(value=active_page).props(
-                "dense shrink stretch indicator-color=white no-caps"
-            ).classes("bh-desktop-only") as desktop_tabs:
-                for item in NAVIGATION:
-                    ui.tab(item.key, label=item.label, icon=item.icon)
-                desktop_tabs.on_value_change(lambda event: navigate_to(event.value))
+        # Keep desktop navigation outside Quasar's header stacking context.
+        # It is positioned over the header visually, but remains an independent
+        # native hit target just like the working mobile navigation.
+        ui.html(desktop_navigation_html(active_page), sanitize=False)
 
         with ui.footer(fixed=True, bordered=True, wrap=False).classes(
             "bh-mobile-nav bh-mobile-only bg-white text-grey-8"
         ):
-            with ui.tabs(value=active_page).props(
-                "dense stretch no-caps active-color=primary indicator-color=primary align=justify"
-            ).classes("w-full") as mobile_tabs:
+            with ui.row().classes("w-full no-wrap items-stretch gap-0"):
                 for item in NAVIGATION:
-                    ui.tab(item.key, label=item.label, icon=item.icon)
-                mobile_tabs.on_value_change(lambda event: navigate_to(event.value))
+                    classes = "bh-nav-link flex-1 items-center justify-center"
+                    if item.key == active_page:
+                        classes += " bh-nav-link-active"
+                    with ui.link(target=item.path).classes(classes):
+                        with ui.column().classes("items-center justify-center gap-0"):
+                            ui.icon(item.icon).classes("text-xl")
+                            ui.label(item.label).classes("text-[11px] leading-tight")
+
+
+def desktop_navigation_html(active_page: str) -> str:
+    links = []
+    for item in NAVIGATION:
+        classes = "bh-desktop-nav-item"
+        if item.key == active_page:
+            classes += " bh-desktop-nav-item-active"
+        links.append(
+            f'<a class="{classes}" href="{escape(item.path, quote=True)}" '
+            f'aria-current="{"page" if item.key == active_page else "false"}">'
+            f'<span class="material-icons" aria-hidden="true">{escape(item.icon)}</span>'
+            f'<span>{escape(item.label)}</span></a>'
+        )
+    return (
+        '<nav class="bh-desktop-nav bh-desktop-only" aria-label="Primary navigation">'
+        + "".join(links)
+        + "</nav>"
+    )
 
 
 def visible_columns_expression(mobile: list[str], desktop: list[str]) -> str:

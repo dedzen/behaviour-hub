@@ -6,31 +6,35 @@ from timeline.statistics.tools import human_duration
 class SummaryView:
 
     def __init__(self):
-        with ui.card().classes("w-full"):
+        with ui.column().classes("w-full gap-2"):
             ui.label("Summary").classes("text-h6")
+            with ui.grid().classes("grid-cols-2 lg:grid-cols-4 gap-3 w-full"):
+                self.sessions = self._metric("Sessions")
+                self.total = self._metric("Total time")
+                self.average = self._metric("Average session")
+                self.median = self._metric("Median session")
 
-            with ui.grid().classes("grid-cols-2 lg:grid-cols-4 gap-x-4 gap-y-2 w-full"):
-                self.sessions = ui.label()
-                self.total = ui.label()
-
-                self.average = ui.label()
-                self.median = ui.label()
+    @staticmethod
+    def _metric(label: str):
+        with ui.card().classes("bh-card w-full"):
+            ui.label(label).classes("text-caption text-grey-7")
+            return ui.label().classes("text-h6")
 
     def update(self, timeline: Timeline):
         stats = timeline.statistics.chunks
 
         self.sessions.set_text(
-            f"Sessions: {stats.sessions}"
+            str(stats.sessions)
         )
 
         self.total.set_text(
-            f"Total: {human_duration(stats.total_seconds)}"
+            human_duration(stats.total_seconds)
         )
 
         self.average.set_text(
-            f"Average: {human_duration(stats.average_seconds)}"
+            human_duration(stats.average_seconds)
         )
 
         self.median.set_text(
-            f"Median: {human_duration(stats.median_seconds)}"
+            human_duration(stats.median_seconds)
         )

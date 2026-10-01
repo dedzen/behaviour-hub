@@ -197,7 +197,7 @@ class ConnectionLifecycleTest(unittest.TestCase):
             runtime.changes.publish(DataChange(events_changed=True))
 
             self.assertEqual(dashboards[0].filters.state.preset, "Today")
-            self.assertEqual(dashboards[1].filters.state.preset, "All time")
+            self.assertEqual(dashboards[1].filters.state.preset, "Today")
             self.assertIsNot(dashboards[0].events, dashboards[1].events)
             for client in clients:
                 client.delete()

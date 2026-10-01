@@ -5,6 +5,9 @@ data/
 timeline.db
 timeline.db-shm
 timeline.db-wal
+goals.db
+goals.db-shm
+goals.db-wal
 .ipynb_checkpoints
 .vscode/
 backups/

@@ -56,7 +56,7 @@ class Query:
                 params.append(self.start.isoformat(sep=" "))
 
         if self.end is not None:
-            where.append(f"{timestamp_column} <= ?")
+            where.append(f"{timestamp_column} < ?")
             if isinstance(self.end, date):
                 params.append(
                     datetime.combine(self.end, datetime.min.time()).isoformat(sep=" ")

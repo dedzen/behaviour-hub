@@ -123,7 +123,7 @@ class Timeline:
         if isinstance(source, DeviceSource):
             source = {source}
         else:
-            activity = set(source)
+            source = set(source)
         return self._replace_query(
             sources=frozenset(source),
         )

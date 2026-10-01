@@ -6,29 +6,29 @@ import urllib.error
 import urllib.request
 
 from nice_ui.keyboard_shortcuts import KeyboardShortcut, shortcut_script
-from nice_ui.pages.filter_panel import FilterPanel
+from nice_ui.pages.filter_panel import FilterPanel, previous_date_range
+from nice_ui.pages.overview import OverviewView
 from nice_ui.pages.statistics import StatisticsView
 from nice_ui.pages.analytics import AnalyticsView
 from nice_ui.pages.plots import PlotsView
 from nice_ui.pages.events import EventsView
 from nice_ui.pages.screen_time import ScreenTimeIntersectionView
 from nice_ui.pages.calendar import CalendarPage
+from nice_ui.pages.import_flow import ImportSourceCard
+from nice_ui.pages.goals import GoalsPage
 from nice_ui.runtime import DashboardRuntime, DashboardSession, DataChange
 from nice_ui.responsive import AppShell, VIEWPORT
 
 DATABASE_PATH = Path("timeline.db")
+GOALS_DATABASE_PATH = Path(os.environ.get("GOALS_DATABASE_PATH", "goals.db"))
 EMBED_INCOMING_PATH = Path("data/embed/incoming.csv")
 ANDROID_UNLOCK_PATH = Path("data/android/unlock-events.jsonl")
-RUNTIME = DashboardRuntime(DATABASE_PATH)
+RUNTIME = DashboardRuntime(DATABASE_PATH, GOALS_DATABASE_PATH)
 app.on_startup(RUNTIME.initialize)
 
 
 def build_header(active_page: str, *, on_filter=None) -> AppShell:
     return AppShell(active_page, on_filter=on_filter)
-
-
-def placeholder_action(action: str):
-    ui.notify(f"{action} is not wired yet", type="info")
 
 
 async def notify_action(action):
@@ -114,30 +114,6 @@ def clear_android_log(ip: str) -> str:
     return f"Cleared Android log on {ip}"
 
 
-def import_embed_log() -> str:
-    return RUNTIME.service.import_embed(EMBED_INCOMING_PATH).message
-
-
-def import_android_log(filename: str, strategy: str) -> str:
-    return RUNTIME.service.import_android(Path(filename.strip()), strategy).message
-
-
-def rebuild_chunks() -> str:
-    return RUNTIME.service.rebuild_chunks().message
-
-
-def import_section(title: str, actions: list[tuple[str, str]]):
-    with ui.card().classes("w-full"):
-        ui.label(title).classes("text-subtitle1")
-        with ui.row().classes("w-full gap-2"):
-            for label, icon in actions:
-                ui.button(
-                    label,
-                    icon=icon,
-                    on_click=lambda action=label: placeholder_action(action),  #type: ignore
-                ).props("outline")
-
-
 def main_shortcut_script() -> str:
     return shortcut_script(
         "main",
@@ -146,6 +122,7 @@ def main_shortcut_script() -> str:
             KeyboardShortcut("2", ".main-tab-shortcut-2"),
             KeyboardShortcut("3", ".main-tab-shortcut-3"),
             KeyboardShortcut("4", ".main-tab-shortcut-4"),
+            KeyboardShortcut("5", ".main-tab-shortcut-5"),
         ],
     )
 
@@ -174,21 +151,26 @@ class MainDashboard:
                 with ui.tabs().props("dense no-caps align=left mobile-arrows outside-arrows").classes(
                     "bh-dashboard-tabs w-full overflow-x-auto"
                 ) as self.tabs:
-                    statistics_tab = ui.tab("Statistics", icon="query_stats").classes(
+                    overview_tab = ui.tab("Overview", icon="space_dashboard").classes(
                         "main-tab-shortcut-1"
                     )
-                    analytics_tab = ui.tab("Analytics", icon="table_chart").classes(
+                    statistics_tab = ui.tab("Statistics", icon="query_stats").classes(
                         "main-tab-shortcut-2"
                     )
-                    plots_tab = ui.tab("Plots", icon="insert_chart").classes(
+                    analytics_tab = ui.tab("Analytics", icon="table_chart").classes(
                         "main-tab-shortcut-3"
                     )
-                    screen_time_tab = ui.tab("Screen Time", icon="phone_android").classes(
+                    plots_tab = ui.tab("Plots", icon="insert_chart").classes(
                         "main-tab-shortcut-4"
                     )
-                with ui.tab_panels(self.tabs, value=analytics_tab).classes(
+                    screen_time_tab = ui.tab("Screen Time", icon="phone_android").classes(
+                        "main-tab-shortcut-5"
+                    )
+                with ui.tab_panels(self.tabs, value=overview_tab).classes(
                     "bh-tab-panels w-full bg-transparent"
                 ):
+                    with ui.tab_panel(overview_tab):
+                        self.overview = OverviewView()
                     with ui.tab_panel(statistics_tab):
                         self.statistics = StatisticsView()
                     with ui.tab_panel(analytics_tab):
@@ -238,14 +220,20 @@ class MainDashboard:
             ui.button(icon="tune", on_click=self.filter_drawer.toggle).props(
                 "flat round dense aria-label=Filters"
             )
-            for label in self.filters.summary_labels():
-                ui.badge(label).props("outline color=primary").classes("whitespace-nowrap")
+            for kind, label in self.filters.summary_items():
+                ui.chip(
+                    label,
+                    removable=True,
+                    on_value_change=lambda event, selected=kind: (
+                        self.filters.remove_summary(selected) if not event.value else None
+                    ),
+                ).props("outline color=primary dense").classes("whitespace-nowrap")
 
     def refresh(self) -> None:
         self.current_timeline = self.filters.timeline()
         self.events.update(self.current_timeline)
         self._render_filter_summary()
-        self._dirty_tabs = {"Statistics", "Analytics", "Plots", "Screen Time"}
+        self._dirty_tabs = {"Overview", "Statistics", "Analytics", "Plots", "Screen Time"}
         self.update_current_tab()
 
     def update_current_tab(self) -> None:
@@ -255,6 +243,21 @@ class MainDashboard:
         if current_tab not in self._dirty_tabs:
             return
         match current_tab:
+            case "Overview":
+                start, end = previous_date_range(
+                    self.current_timeline.query.start,
+                    self.current_timeline.query.end,
+                )
+                previous = (
+                    self.current_timeline.between(start, end)
+                    if start is not None and end is not None
+                    else None
+                )
+                self.overview.update(
+                    self.current_timeline,
+                    previous,
+                    range_label=self.filters.range_label(),
+                )
             case "Statistics":
                 self.statistics.update(self.current_timeline)
             case "Analytics":
@@ -272,7 +275,7 @@ class MainDashboard:
         self.current_timeline = self.filters.timeline()
         self.events.database_changed(self.current_timeline)
         self._render_filter_summary()
-        self._dirty_tabs = {"Statistics", "Analytics", "Plots", "Screen Time"}
+        self._dirty_tabs = {"Overview", "Statistics", "Analytics", "Plots", "Screen Time"}
         self.update_current_tab()
 
 
@@ -296,6 +299,14 @@ def calendar_page():
     )
 
 
+@ui.page("/goals", viewport=VIEWPORT)
+def goals_page():
+    build_header("Goals")
+    session = DashboardSession(RUNTIME, ui.context.client)
+    goals = GoalsPage(session.timeline, session.goal_repo, session.runtime)
+    session.subscribe(goals.database_changed)
+
+
 @ui.page("/import-export", viewport=VIEWPORT)
 def import_export_page():
     build_header("Import/Export")
@@ -312,80 +323,41 @@ def import_export_page():
                         on_click=lambda: notify_action(RUNTIME.rebuild_chunks),
                     ).props("flat round dense"):
                         ui.tooltip("Rebuild chunks")
-                with ui.card().classes("w-full"):
-                    ui.label("Embed").classes("text-subtitle1")
-                    embed_ip = ui.input(
-                        "IP",
-                        value="192.168.3.55",
-                    ).classes("w-full")
-                    with ui.row().classes("w-full gap-2 flex-wrap"):
-                        ui.button(
-                            "Download log",
-                            icon="download",
-                            on_click=lambda: notify_action(
-                                lambda: RUNTIME.run_io(
-                                    lambda: download_embed_log(embed_ip.value or "")
-                                )
-                            ),
-                        ).props("outline")
-                        ui.button(
-                            "Clear log",
-                            icon="delete",
-                            on_click=lambda: notify_action(
-                                lambda: RUNTIME.run_io(
-                                    lambda: clear_embed_log(embed_ip.value or "")
-                                )
-                            ),
-                        ).props("outline color=negative")
-                        ui.button(
-                            "Import log",
-                            icon="upload_file",
-                            on_click=lambda: notify_action(
-                                lambda: RUNTIME.import_embed(EMBED_INCOMING_PATH)
-                            ),
-                        ).props("outline")
-                with ui.card().classes("w-full"):
-                    ui.label("Phone").classes("text-subtitle1")
-                    phone_ip = ui.input(
-                        "IP",
-                        value="192.168.3.44:8787",
-                    ).classes("w-full")
-                    with ui.row().classes("w-full gap-2 flex-wrap"):
-                        ui.button(
-                            "Download log",
-                            icon="download",
-                            on_click=lambda: notify_action(
-                                lambda: RUNTIME.run_io(
-                                    lambda: download_android_log(phone_ip.value or "")
-                                )
-                            ),
-                        ).props("outline")
-                        ui.button(
-                            "Clear log",
-                            icon="delete",
-                            on_click=lambda: notify_action(
-                                lambda: RUNTIME.run_io(
-                                    lambda: clear_android_log(phone_ip.value or "")
-                                )
-                            ),
-                        ).props("outline color=negative")
-                        ui.button(
-                            "Import log",
-                            icon="upload_file",
-                            on_click=lambda: notify_action(
-                                lambda: RUNTIME.import_android(
-                                    ANDROID_UNLOCK_PATH,
-                                    "active_screen",
-                                )
-                            ),
-                        ).props("outline")
-                import_section(
-                    "Obsidian",
-                    [
-                        ("Select vault", "folder_open"),
-                        ("Import notes", "article"),
-                    ],
+                ImportSourceCard(
+                    "Embed",
+                    "192.168.3.55",
+                    download=lambda address: RUNTIME.run_io(
+                        lambda: download_embed_log(address)
+                    ),
+                    preview=lambda: RUNTIME.preview_embed(EMBED_INCOMING_PATH),
+                    import_data=lambda: RUNTIME.import_embed(EMBED_INCOMING_PATH),
+                    clear_remote=lambda address: RUNTIME.run_io(
+                        lambda: clear_embed_log(address)
+                    ),
                 )
+                ImportSourceCard(
+                    "Phone",
+                    "192.168.3.44:8787",
+                    download=lambda address: RUNTIME.run_io(
+                        lambda: download_android_log(address)
+                    ),
+                    preview=lambda: RUNTIME.preview_android(
+                        ANDROID_UNLOCK_PATH, "active_screen"
+                    ),
+                    import_data=lambda: RUNTIME.import_android(
+                        ANDROID_UNLOCK_PATH, "active_screen"
+                    ),
+                    clear_remote=lambda address: RUNTIME.run_io(
+                        lambda: clear_android_log(address)
+                    ),
+                )
+                with ui.card().classes("bh-card w-full opacity-70"):
+                    with ui.row().classes("w-full items-center justify-between"):
+                        ui.label("Obsidian").classes("text-subtitle1")
+                        ui.badge("Coming later").props("outline color=grey")
+                    ui.label("Vault note import is not available in this release.").classes(
+                        "text-caption text-grey-7"
+                    )
 
             ui.separator().props("vertical").classes("self-stretch bh-desktop-only")
 
@@ -393,17 +365,9 @@ def import_export_page():
                 ui.label("Export").classes("text-h6")
                 with ui.card().classes("w-full"):
                     ui.label("Export").classes("text-subtitle1")
-                    with ui.row().classes("w-full gap-2 flex-wrap"):
-                        ui.button(
-                            "Export data",
-                            icon="ios_share",
-                            on_click=lambda: placeholder_action("Export data"),
-                        ).props("outline")
-                        ui.button(
-                            "Export report",
-                            icon="description",
-                            on_click=lambda: placeholder_action("Export report"),
-                        ).props("outline")
+                    ui.label(
+                        "Dashboard exports are coming later. Daily Markdown export remains available in the CLI."
+                    ).classes("text-body2 text-grey-7")
 
 
 if __name__ in {"__main__", "__mp_main__"}:

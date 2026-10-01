@@ -54,6 +54,7 @@ class EventEditor:
         self.dirty = False
         self.stale = False
         self._loading = False
+        self._mutating = False
 
         with ui.dialog() as self.dialog, ui.card().classes(
             "bh-dialog-panel w-[32rem] max-w-full"
@@ -80,11 +81,26 @@ class EventEditor:
             self.name = ui.input("Name", on_change=self._mark_dirty).classes("w-full")
 
             with ui.row().classes("w-full justify-between"):
-                self.delete_button = ui.button("Delete", on_click=self._delete).props("color=negative")
+                self.delete_button = ui.button(
+                    "Delete", on_click=self._open_delete_confirmation
+                ).props("color=negative")
                 with ui.row():
                     ui.button("Cancel", on_click=self.dialog.close).props("flat")
                     self.save_button = ui.button("Save", on_click=self._save)
         self.stale_row.set_visibility(False)
+        with ui.dialog() as self.delete_dialog, ui.card().classes(
+            "bh-dialog-panel w-[30rem] max-w-full"
+        ):
+            ui.label("Delete event?").classes("text-h6")
+            self.delete_message = ui.label().classes("text-body2")
+            ui.label(
+                "Chunks will be rebuilt from the remaining source events. This cannot be undone here."
+            ).classes("text-caption text-grey-7")
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=self.delete_dialog.close).props("flat")
+                self.confirm_delete_button = ui.button(
+                    "Delete event", icon="delete_forever", on_click=self._delete
+                ).props("color=negative")
 
     def bind(self, timeline: Timeline):
         self.timeline = timeline
@@ -104,6 +120,7 @@ class EventEditor:
         self.dialog.open()
 
     def _load_selected(self, selected: Event):
+        self.delete_dialog.close()
         self.selected_event = selected
         self._loading = True
         try:
@@ -147,6 +164,9 @@ class EventEditor:
             return
         current = self.timeline.repo.get(Event, self.selected_event.id)
         if current is None or current.revision != self.selected_event.revision:
+            if self.delete_dialog.value:
+                self.delete_dialog.close()
+                ui.notify("Event changed; review it again before deleting", type="warning")
             if self.dirty:
                 self._set_stale(True)
             elif current is None:
@@ -156,7 +176,7 @@ class EventEditor:
                 self._load_selected(current)
 
     async def _save(self):
-        if self.selected_event is None or self.timeline is None:
+        if self.selected_event is None or self.timeline is None or self._mutating:
             return
 
         if self.stale:
@@ -176,6 +196,7 @@ class EventEditor:
             ui.notify("Timestamp, source, or kind is invalid", type="negative")
             return
 
+        self._set_mutating(True)
         try:
             if self.mutation_api is None:
                 self.timeline.repo.update(updated)
@@ -187,6 +208,8 @@ class EventEditor:
             self._set_stale(True)
             ui.notify("Event changed elsewhere; reload before saving", type="warning")
             return
+        finally:
+            self._set_mutating(False)
 
         self.selected_event = updated
         self.dirty = False
@@ -195,13 +218,36 @@ class EventEditor:
             self.on_change()
         notify_event_change("Event updated", warnings)
 
+    def _open_delete_confirmation(self):
+        if self.selected_event is None or self._mutating:
+            return
+        self.delete_message.set_text(
+            f"Delete event {self.selected_event.id} at {self.selected_event.timestamp}?"
+        )
+        self.delete_dialog.open()
+
+    def _set_mutating(self, mutating: bool):
+        self._mutating = mutating
+        buttons = (self.save_button, self.delete_button, self.confirm_delete_button)
+        for button in buttons:
+            if mutating or self.stale:
+                button.props("disable")
+            else:
+                button.props(remove="disable")
+
     async def _delete(self):
-        if self.selected_event is None or self.selected_event.id is None or self.timeline is None:
+        if (
+            self.selected_event is None
+            or self.selected_event.id is None
+            or self.timeline is None
+            or self._mutating
+        ):
             return
 
         if self.stale:
             return
 
+        self._set_mutating(True)
         try:
             if self.mutation_api is None:
                 self.timeline.repo.delete(Event, self.selected_event.id)
@@ -216,7 +262,10 @@ class EventEditor:
             self._set_stale(True)
             ui.notify("Event changed elsewhere; reload before deleting", type="warning")
             return
+        finally:
+            self._set_mutating(False)
 
+        self.delete_dialog.close()
         self.dialog.close()
         self.selected_event = None
         if self.on_change is not None:

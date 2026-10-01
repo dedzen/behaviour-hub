@@ -156,10 +156,11 @@ uv run behaviour-hub events delete 123 --db timeline.db
 uv run behaviour-hub export markdown 2026-08-01 --database timeline.db --output daily.md
 ```
 
-The NiceGUI Import/Export page can also download an Embed log from
-`http://<ip>/log.csv`, clear the remote log with `DELETE`, import the downloaded
-file from `data/embed/incoming.csv`, import Android logs from
-`data/android/unlock-events.jsonl` using the active-screen strategy, and rebuild chunks.
+The NiceGUI Import/Export page guides each source through download, read-only
+preview, transactional import, and optional confirmed remote clearing. Embed
+downloads use `http://<ip>/log.csv`; Android downloads use
+`data/android/unlock-events.jsonl` and the active-screen strategy. Preview shows
+new and duplicate counts plus source-specific warnings before the database is changed.
 The CLI can download and clear Android logs through
 `http://<ip-or-host:port>/unlock-events.jsonl`.
 
@@ -211,15 +212,24 @@ duration is calculated.
 
 The NiceGUI dashboard includes:
 
-- Sidebar filters for time presets, devices, activities, and duration range.
+- A Today-first Overview with tracked time, sessions, average duration, separate
+  phone screen time, previous-period comparisons, and top activities.
+- Sidebar filters for presets or custom dates, activity sources, searchable
+  activities, and duration range.
 - Statistics tab with summary, by-activity, and by-day tables.
 - Analytics tab with time share, daily mix, rolling daily time, and short-gap
   transitions.
 - Plots tab with ECharts views for activity share, total tracked time,
   composition, and trends by day/week/month/year.
 - Day tab with per-source lanes for chunks and point markers.
-- Event Viewer tab with search, event editing, deletion, and automatic chunk
-  rebuilds.
+- An Event Viewer dialog with search, event editing, confirmed deletion, and
+  automatic chunk rebuilds.
+- A Goals page for one-off or recurring daily and weekly activity-duration
+  targets, live progress, effective-dated revisions, and archival.
+
+Goal definitions are stored separately in `goals.db` by default. Override that
+path with `GOALS_DATABASE_PATH`. Goal progress is calculated from the current
+timeline data rather than copied into the goals database.
 
 ## Development
 

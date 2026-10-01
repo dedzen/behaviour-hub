@@ -221,7 +221,8 @@ def render_day_timeline_html(
     columns = []
     for source in sources:
         column_blocks = "".join(
-            f'<div class="chunk {block.label_mode}" title="{escape(block.title)}" '
+            f'<div class="chunk {block.label_mode}" role="button" tabindex="0" '
+            f'aria-label="{escape(block.title)}" title="{escape(block.title)}" '
             f'data-event-ids="{event_ids_attribute(block.start_event_id, block.end_event_id)}" '
             f'style="top:{block.start_percent:.6f}%;'
             f'height:{block.width_percent:.6f}%;'
@@ -231,7 +232,8 @@ def render_day_timeline_html(
             if block.source == source
         )
         column_points = "".join(
-            f'<div class="point" title="{escape(point.title)}" '
+            f'<div class="point" role="button" tabindex="0" '
+            f'aria-label="{escape(point.title)}" title="{escape(point.title)}" '
             f'data-event-ids="{event_ids_attribute(point.event_id)}" '
             f'style="top:{point.left_percent:.6f}%;">'
             f'<span>{escape(point.label)}</span></div>'
@@ -493,6 +495,8 @@ class DayTimelineView:
         self._loading_marker = False
         self._saving_marker: DayMarker | None = None
         self._chunk_event_revisions: dict[int, int] = {}
+        self._pending_chunk_delete: list[int] = []
+        self._deleting_chunk = False
 
         with ui.column().classes("w-full gap-4"):
             with ui.row().classes("w-full items-center justify-between"):
@@ -579,6 +583,20 @@ class DayTimelineView:
                     }
                     """,
                 )
+                self.container.on(
+                    "keydown",
+                    self._calendar_clicked,
+                    js_handler="""
+                    (event) => {
+                      if (event.key !== 'Enter' && event.key !== ' ') return;
+                      const target = event.target.closest('[data-event-ids]');
+                      if (target && target.dataset.eventIds) {
+                        event.preventDefault();
+                        emit(target.dataset.eventIds);
+                      }
+                    }
+                    """,
+                )
 
         self.editor = EventEditor(on_change=self._render, mutation_api=mutation_api)
         self.habit_inputs = {}
@@ -592,6 +610,19 @@ class DayTimelineView:
             ui.label("Chunk Details").classes("text-h6")
             with ui.column().classes("w-full gap-2") as self.chunk_detail_content:
                 pass
+        with ui.dialog() as self.remove_chunk_dialog, ui.card().classes(
+            "bh-dialog-panel w-[30rem] max-w-full"
+        ):
+            ui.label("Remove chunk?").classes("text-h6")
+            self.remove_chunk_message = ui.label().classes("text-body2")
+            ui.label(
+                "Both source events will be deleted and all chunks rebuilt. This cannot be undone here."
+            ).classes("text-caption text-grey-7")
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=self.remove_chunk_dialog.close).props("flat")
+                self.confirm_remove_chunk = ui.button(
+                    "Remove chunk", icon="delete_forever", on_click=self._confirm_remove_chunk
+                ).props("color=negative")
 
     def update(self, timeline: Timeline):
         self.timeline = timeline
@@ -840,7 +871,7 @@ class DayTimelineView:
                 ui.button(
                     "Remove chunk",
                     icon="delete",
-                    on_click=lambda ids=event_ids: self._remove_chunk(ids), #type: ignore
+                    on_click=lambda ids=event_ids: self._open_remove_chunk_confirmation(ids), #type: ignore
                 ).props("color=negative")
 
         self.chunk_detail_dialog.open()
@@ -861,10 +892,26 @@ class DayTimelineView:
         self._detail_row("Chunk ID", str(chunk.id or ""))
         self._detail_row("Event IDs", f"{chunk.start_event_id}, {chunk.end_event_id}")
 
+    def _open_remove_chunk_confirmation(self, event_ids: list[int]):
+        if self._deleting_chunk:
+            return
+        self._pending_chunk_delete = list(event_ids)
+        self.remove_chunk_message.set_text(
+            f"Delete source events {', '.join(map(str, event_ids))}?"
+        )
+        self.remove_chunk_dialog.open()
+
+    async def _confirm_remove_chunk(self):
+        if not self._pending_chunk_delete:
+            return
+        await self._remove_chunk(self._pending_chunk_delete)
+
     async def _remove_chunk(self, event_ids: list[int]):
-        if self.timeline is None:
+        if self.timeline is None or self._deleting_chunk:
             return
 
+        self._deleting_chunk = True
+        self.confirm_remove_chunk.props("disable")
         try:
             if self.mutation_api is None:
                 warnings = remove_chunk_source_events(self.timeline.repo, event_ids)
@@ -876,7 +923,12 @@ class DayTimelineView:
         except ConcurrentModificationError:
             ui.notify("Chunk changed elsewhere; reopen it before deleting", type="warning")
             return
+        finally:
+            self._deleting_chunk = False
+            self.confirm_remove_chunk.props(remove="disable")
+        self.remove_chunk_dialog.close()
         self.chunk_detail_dialog.close()
+        self._pending_chunk_delete = []
         self._render()
         notify_event_change("Chunk source events deleted", warnings)
 
