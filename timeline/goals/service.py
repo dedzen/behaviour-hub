@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from timeline.api.timeline import Timeline
@@ -155,9 +155,11 @@ def progress_for_period(
     timeline: Timeline,
     period: GoalPeriod,
     selected: date,
+    *,
+    now: datetime | None = None,
 ) -> list[GoalProgress]:
     window = period_window(period, selected)
     return [
-        DEFAULT_EVALUATORS.evaluate(definition, timeline, window)
+        DEFAULT_EVALUATORS.evaluate(definition, timeline, window, now)
         for definition in repo.definitions_for_period(period, window.start)
     ]

@@ -5,7 +5,10 @@ import unittest
 
 from nice_ui.pages.calendar import (
     CalendarDayMetrics,
+    CalendarGoalShade,
+    calendar_day_metrics,
     calendar_day_summary,
+    calendar_goal_shade,
     calendar_shortcut_script,
     format_calendar_duration,
     marker_indicator_text,
@@ -16,10 +19,89 @@ from nice_ui.pages.calendar import (
 from timeline.api.timeline import Timeline
 from timeline.domain.enums import DeviceSource, EventKind
 from timeline.domain.models import Chunk, DayMarker, Event
+from timeline.goals.models import (
+    ActivityDurationRule,
+    GoalOperator,
+    GoalPeriod,
+    GoalSchedule,
+)
+from timeline.goals.repository import GoalRepository
+from timeline.goals.service import GoalService
 from timeline.storage.repository import SQLiteRepository
 
 
 class CalendarPageHelpersTest(unittest.TestCase):
+    def test_goal_shades_cover_open_and_completed_days(self):
+        self.assertEqual(
+            calendar_goal_shade(total=0, met=0, day_ended=True),
+            CalendarGoalShade.NONE,
+        )
+        self.assertEqual(
+            calendar_goal_shade(total=2, met=0, day_ended=False),
+            CalendarGoalShade.OPEN,
+        )
+        self.assertEqual(
+            calendar_goal_shade(total=2, met=0, day_ended=True),
+            CalendarGoalShade.NONE_MET,
+        )
+        self.assertEqual(
+            calendar_goal_shade(total=2, met=1, day_ended=True),
+            CalendarGoalShade.SOME_MET,
+        )
+        self.assertEqual(
+            calendar_goal_shade(total=2, met=2, day_ended=True),
+            CalendarGoalShade.ALL_MET,
+        )
+
+    def test_calendar_metrics_evaluate_daily_goals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            timeline_repo = SQLiteRepository(root / "timeline.db")
+            timeline_repo.ensure_schema()
+            goals = GoalService(root / "goals.db")
+            goals.initialize()
+            goals_to_create = (
+                ("Short focus", 3600),
+                ("Long focus", 3 * 3600),
+            )
+            for title, target_seconds in goals_to_create:
+                goals.create_goal(
+                    schedule=GoalSchedule.ONE_OFF,
+                    period=GoalPeriod.DAY,
+                    selected_start=date(2026, 8, 1),
+                    selected_end=None,
+                    title=title,
+                    rule=ActivityDurationRule(
+                        source=DeviceSource.EMBED,
+                        category="Work",
+                        activity="Working",
+                        operator=GoalOperator.AT_LEAST,
+                        target_seconds=target_seconds,
+                    ),
+                )
+            self._insert_chunk(
+                timeline_repo,
+                datetime(2026, 8, 1, 9),
+                datetime(2026, 8, 1, 11),
+                DeviceSource.EMBED,
+                "Work",
+                "Working",
+            )
+            timeline_repo.commit()
+
+            with GoalRepository(root / "goals.db") as goal_repo:
+                metric = calendar_day_metrics(
+                    Timeline(timeline_repo),
+                    date(2026, 8, 1),
+                    goal_repo=goal_repo,
+                    now=datetime(2026, 8, 2),
+                )
+
+            timeline_repo.close()
+            self.assertEqual(metric.goals_met, 1)
+            self.assertEqual(metric.goals_total, 2)
+            self.assertEqual(metric.goal_shade, CalendarGoalShade.SOME_MET)
+
     def test_month_grid_includes_leading_and_trailing_days(self):
         weeks = month_grid_dates(2026, 8)
 

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import calendar as calendar_lib
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from enum import StrEnum
 
 from nicegui import ui
 
@@ -10,6 +11,18 @@ from nice_ui.keyboard_shortcuts import KeyboardShortcut, shortcut_script
 from nice_ui.pages.day_timeline import DayTimelineView
 from timeline.api.timeline import Timeline
 from timeline.domain.models import DayMarker
+from timeline.goals.models import GoalPeriod, ProgressStatus
+from timeline.goals.periods import period_is_closed, period_window
+from timeline.goals.repository import GoalRepository
+from timeline.goals.service import progress_for_period
+
+
+class CalendarGoalShade(StrEnum):
+    NONE = "none"
+    OPEN = "open"
+    NONE_MET = "none_met"
+    SOME_MET = "some_met"
+    ALL_MET = "all_met"
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +38,9 @@ class CalendarDaySummary:
     people_count: int
     habits_done: int
     habits_total: int
+    goals_met: int = 0
+    goals_total: int = 0
+    goal_shade: CalendarGoalShade = CalendarGoalShade.NONE
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +53,9 @@ class CalendarDayMetrics:
     people_count: int
     habits_done: int
     habits_total: int
+    goals_met: int = 0
+    goals_total: int = 0
+    goal_shade: CalendarGoalShade = CalendarGoalShade.NONE
 
     def with_state(
         self,
@@ -57,6 +76,9 @@ class CalendarDayMetrics:
             people_count=self.people_count,
             habits_done=self.habits_done,
             habits_total=self.habits_total,
+            goals_met=self.goals_met,
+            goals_total=self.goals_total,
+            goal_shade=self.goal_shade,
         )
 
 
@@ -93,17 +115,43 @@ def calendar_day_summary(
     visible_month: date,
     selected_day: date,
     today: date,
+    goal_repo: GoalRepository | None = None,
+    now: datetime | None = None,
 ) -> CalendarDaySummary:
-    return calendar_day_metrics(timeline, day).with_state(
+    return calendar_day_metrics(timeline, day, goal_repo=goal_repo, now=now).with_state(
         visible_month=visible_month,
         selected_day=selected_day,
         today=today,
     )
 
 
-def calendar_day_metrics(timeline: Timeline, day: date) -> CalendarDayMetrics:
+def calendar_day_metrics(
+    timeline: Timeline,
+    day: date,
+    *,
+    goal_repo: GoalRepository | None = None,
+    now: datetime | None = None,
+) -> CalendarDayMetrics:
     picture = timeline.day_picture(day)
     marker = picture.marker
+    goals_met = 0
+    goals_total = 0
+    goal_shade = CalendarGoalShade.NONE
+    if goal_repo is not None:
+        progress = progress_for_period(
+            goal_repo,
+            timeline,
+            GoalPeriod.DAY,
+            day,
+            now=now,
+        )
+        goals_total = len(progress)
+        goals_met = sum(item.status == ProgressStatus.MET for item in progress)
+        goal_shade = calendar_goal_shade(
+            total=goals_total,
+            met=goals_met,
+            day_ended=period_is_closed(period_window(GoalPeriod.DAY, day), now),
+        )
 
     return CalendarDayMetrics(
         day=day,
@@ -114,7 +162,27 @@ def calendar_day_metrics(timeline: Timeline, day: date) -> CalendarDayMetrics:
         people_count=len(marker.people) if marker is not None else 0,
         habits_done=_habits_done(marker),
         habits_total=len(marker.habits) if marker is not None else 0,
+        goals_met=goals_met,
+        goals_total=goals_total,
+        goal_shade=goal_shade,
     )
+
+
+def calendar_goal_shade(
+    *,
+    total: int,
+    met: int,
+    day_ended: bool,
+) -> CalendarGoalShade:
+    if total <= 0:
+        return CalendarGoalShade.NONE
+    if not day_ended:
+        return CalendarGoalShade.OPEN
+    if met <= 0:
+        return CalendarGoalShade.NONE_MET
+    if met < total:
+        return CalendarGoalShade.SOME_MET
+    return CalendarGoalShade.ALL_MET
 
 
 def month_day_summaries(
@@ -122,6 +190,9 @@ def month_day_summaries(
     visible_month: date,
     selected_day: date,
     today: date,
+    *,
+    goal_repo: GoalRepository | None = None,
+    now: datetime | None = None,
 ) -> list[CalendarDaySummary]:
     return [
         metric.with_state(
@@ -129,16 +200,24 @@ def month_day_summaries(
             selected_day=selected_day,
             today=today,
         )
-        for metric in month_day_metrics(timeline, visible_month)
+        for metric in month_day_metrics(
+            timeline,
+            visible_month,
+            goal_repo=goal_repo,
+            now=now,
+        )
     ]
 
 
 def month_day_metrics(
     timeline: Timeline,
     visible_month: date,
+    *,
+    goal_repo: GoalRepository | None = None,
+    now: datetime | None = None,
 ) -> list[CalendarDayMetrics]:
     return [
-        calendar_day_metrics(timeline, day)
+        calendar_day_metrics(timeline, day, goal_repo=goal_repo, now=now)
         for week in month_grid_dates(visible_month.year, visible_month.month)
         for day in week
     ]
@@ -161,8 +240,15 @@ def format_calendar_duration(seconds: int) -> str:
 
 
 class CalendarPage:
-    def __init__(self, timeline: Timeline, *, mutation_api=None):
+    def __init__(
+        self,
+        timeline: Timeline,
+        *,
+        goal_repo: GoalRepository | None = None,
+        mutation_api=None,
+    ):
         self.timeline = timeline
+        self.goal_repo = goal_repo
         self.today = date.today()
         self.selected_day = self.today
         self.visible_month = month_start(self.selected_day)
@@ -215,6 +301,12 @@ class CalendarPage:
                             ui.tooltip("Coming later")
                         with ui.button("Month").props("outline dense disable"):
                             ui.tooltip("Coming later")
+                    with ui.row().classes("items-center gap-x-3 gap-y-1 flex-wrap text-xs"):
+                        ui.label("Daily goals:").classes("text-grey-7 font-medium")
+                        self._goal_legend("bg-blue-200", "In progress")
+                        self._goal_legend("bg-red-200", "None met")
+                        self._goal_legend("bg-amber-200", "Some met")
+                        self._goal_legend("bg-green-200", "All met")
                     self.month_grid = ui.grid(columns=7).classes("w-full gap-1")
 
                 with ui.column().classes("flex-1 min-w-0 gap-3"):
@@ -269,7 +361,11 @@ class CalendarPage:
         self._render_month_grid()
 
     def _marker_saved(self, selected_day: date):
-        self._metrics_by_day[selected_day] = calendar_day_metrics(self.timeline, selected_day)
+        self._metrics_by_day[selected_day] = calendar_day_metrics(
+            self.timeline,
+            selected_day,
+            goal_repo=self.goal_repo,
+        )
         self._render_month_grid()
 
     def database_changed(
@@ -277,8 +373,9 @@ class CalendarPage:
         *,
         events_changed: bool,
         marker_days: frozenset[date],
+        goals_changed: bool = False,
     ) -> None:
-        if events_changed:
+        if events_changed or goals_changed:
             self._refresh_month_metrics()
         else:
             for changed_day in marker_days:
@@ -286,8 +383,9 @@ class CalendarPage:
                     self._metrics_by_day[changed_day] = calendar_day_metrics(
                         self.timeline,
                         changed_day,
+                        goal_repo=self.goal_repo,
                     )
-        if events_changed or marker_days:
+        if events_changed or marker_days or goals_changed:
             self._render_month_grid()
         if self.detail is not None:
             self.detail.database_changed(
@@ -299,7 +397,11 @@ class CalendarPage:
         self._metrics_month = self.visible_month
         self._metrics_by_day = {
             metric.day: metric
-            for metric in month_day_metrics(self.timeline, self.visible_month)
+            for metric in month_day_metrics(
+                self.timeline,
+                self.visible_month,
+                goal_repo=self.goal_repo,
+            )
         }
 
     def _render_month_grid(self):
@@ -324,6 +426,33 @@ class CalendarPage:
                     self._day_cell(summary)
 
     def _day_cell(self, summary: CalendarDaySummary):
+        shade_classes = {
+            CalendarGoalShade.NONE: [
+                "border-slate-200",
+                "bg-white",
+                "hover:bg-blue-50",
+            ],
+            CalendarGoalShade.OPEN: [
+                "border-blue-300",
+                "bg-blue-100",
+                "hover:bg-blue-200",
+            ],
+            CalendarGoalShade.NONE_MET: [
+                "border-red-300",
+                "bg-red-100",
+                "hover:bg-red-200",
+            ],
+            CalendarGoalShade.SOME_MET: [
+                "border-amber-300",
+                "bg-amber-100",
+                "hover:bg-amber-200",
+            ],
+            CalendarGoalShade.ALL_MET: [
+                "border-green-300",
+                "bg-green-100",
+                "hover:bg-green-200",
+            ],
+        }
         classes = [
             "min-h-[5.4rem]",
             "p-1.5",
@@ -331,15 +460,15 @@ class CalendarPage:
             "text-left",
             "cursor-pointer",
             "rounded",
-            "hover:bg-blue-50",
             "transition-colors",
+            *shade_classes[summary.goal_shade],
         ]
         if summary.is_selected:
-            classes.extend(["border-blue-600", "bg-blue-50"])
+            classes.extend(
+                ["border-2", "border-blue-700", "ring-1", "ring-blue-500"]
+            )
         elif summary.is_today:
-            classes.extend(["border-slate-900", "bg-white"])
-        else:
-            classes.extend(["border-slate-200", "bg-white"])
+            classes.extend(["border-2", "border-slate-900"])
         if not summary.in_month:
             classes.extend(["opacity-45"])
 
@@ -358,6 +487,12 @@ class CalendarPage:
                 "bh-calendar-secondary text-xs text-grey-8"
             )
             with ui.row().classes("w-full items-center gap-1 text-grey-6"):
+                if summary.goals_total:
+                    with ui.icon("flag").classes("text-[14px]"):
+                        ui.tooltip(
+                            f"{summary.goals_met} of {summary.goals_total} goals met"
+                        )
+                    ui.label(f"{summary.goals_met}/{summary.goals_total}").classes("text-xs")
                 if summary.has_note:
                     with ui.icon("edit").classes("text-[14px]"):
                         ui.tooltip("Quick note")
@@ -365,6 +500,12 @@ class CalendarPage:
                     with ui.icon("person").classes("text-[14px]"):
                         ui.tooltip("People")
                     ui.label(str(summary.people_count)).classes("text-xs")
+
+    @staticmethod
+    def _goal_legend(color_class: str, label: str) -> None:
+        with ui.row().classes("items-center gap-1 text-grey-7"):
+            ui.element("span").classes(f"w-2.5 h-2.5 rounded-sm {color_class}")
+            ui.label(label)
 
 
 def marker_indicator_text(summary: CalendarDaySummary) -> str:

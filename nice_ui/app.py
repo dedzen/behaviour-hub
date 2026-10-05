@@ -290,11 +290,16 @@ def main_page():
 def calendar_page():
     build_header("Calendar")
     session = DashboardSession(RUNTIME, ui.context.client)
-    calendar = CalendarPage(session.timeline, mutation_api=session.runtime)
+    calendar = CalendarPage(
+        session.timeline,
+        goal_repo=session.goal_repo,
+        mutation_api=session.runtime,
+    )
     session.subscribe(
         lambda change: calendar.database_changed(
             events_changed=change.events_changed,
             marker_days=change.marker_days,
+            goals_changed=change.goals_changed,
         )
     )
 
